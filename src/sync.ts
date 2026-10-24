@@ -56,6 +56,13 @@ export class SyncService {
 		const existingId = meta?.frontmatter?.[FM_ID] as string | undefined;
 		const existingHash = meta?.frontmatter?.[FM_HASH] as string | undefined;
 
+		// Notes imported from ideashell are rendered copies; sending them back would overwrite
+		// the original note in ideashell with the template output.
+		if (isImported(meta?.frontmatter)) {
+			if (!opts.silent) new Notice(`"${file.basename}" was imported from ideashell and is not sent back`);
+			return 'unchanged';
+		}
+
 		// Images already sent for this note (vault paths); only new embeds are uploaded on update.
 		const attachedBefore = new Set<string>(
 			existingId && Array.isArray(meta?.frontmatter?.[FM_IMAGES])
@@ -195,6 +202,7 @@ export class SyncService {
 		const folders = s.syncFolders;
 		return this.app.vault.getMarkdownFiles().filter((f) => {
 			const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+			if (isImported(fm)) return false;
 			if (fm?.[FM_MARK] === true || fm?.[FM_ID]) return true;
 			return folders.some((dir) => f.path === dir || f.path.startsWith(dir + '/'));
 		});
@@ -213,9 +221,19 @@ export class SyncService {
 		return counts;
 	}
 
+	/** Sent to ideashell from Obsidian before (imported notes do not count). */
 	isSynced(file: TFile): boolean {
-		return Boolean(this.app.metadataCache.getFileCache(file)?.frontmatter?.[FM_ID]);
+		const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+		return Boolean(fm?.[FM_ID]) && !isImported(fm);
 	}
+}
+
+/**
+ * A note imported from ideashell carries `ideashell_id` but never `ideashell_hash`, which only
+ * sending a note from Obsidian writes.
+ */
+export function isImported(fm: Record<string, unknown> | undefined): boolean {
+	return Boolean(fm?.[FM_ID]) && fm?.[FM_HASH] === undefined;
 }
 
 function sleep(ms: number): Promise<void> {

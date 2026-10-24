@@ -8,6 +8,31 @@ export const REGION_ENDPOINTS: Record<Exclude<Region, 'custom'>, string> = {
 	global: 'https://api.ideashell.com/ideashell/mcp',
 };
 
+export type ImportTimeRange = 'all' | '7' | '30' | '90' | '365';
+export type ImportFrequency = 'manual' | 'startup' | '1m' | '15m' | '30m' | '60m' | '12h';
+
+export const IMPORT_FREQUENCY_MS: Record<ImportFrequency, number | null> = {
+	manual: null,
+	startup: null,
+	'1m': 60_000,
+	'15m': 15 * 60_000,
+	'30m': 30 * 60_000,
+	'60m': 60 * 60_000,
+	'12h': 12 * 60 * 60_000,
+};
+
+/** Bookkeeping for ideashell → Obsidian imports, persisted with the settings. */
+export interface ImportState {
+	/** Start of the last fully successful run (ISO); later runs only list notes created since. */
+	lastRunAt: string | null;
+	/** Time range in effect for `lastRunAt`; changing the range forces a full listing. */
+	lastRunRange: ImportTimeRange | null;
+	/** Notes deferred because a recording was still transcribing: id → first seen (ISO). */
+	pending: Record<string, string>;
+	/** Human-readable summary of the last run. */
+	lastResult: string;
+}
+
 export interface IdeashellSettings {
 	region: Region;
 	customEndpoint: string;
@@ -24,6 +49,20 @@ export interface IdeashellSettings {
 	autoSyncDelay: number;
 	/** Convert [[wikilinks]] to plain text (true) or leave as-is (false). */
 	stripWikilinks: boolean;
+
+	// --- import (ideashell → Obsidian) ---
+	/** Vault folder for imported notes; supports `{date}` / `{date:FORMAT}`. */
+	importFolder: string;
+	/** File name pattern; supports `{date}`, `{date:FORMAT}`, `{title}`, `{id}`. */
+	importFilenamePattern: string;
+	importTemplatePath: string;
+	importTimeRange: ImportTimeRange;
+	importFrequency: ImportFrequency;
+	/** Leave notes that already exist in the vault untouched (preserves local edits). */
+	importSkipExisting: boolean;
+	importTranscripts: boolean;
+	importRibbon: boolean;
+	importState: ImportState;
 }
 
 export const DEFAULT_SETTINGS: IdeashellSettings = {
@@ -36,6 +75,15 @@ export const DEFAULT_SETTINGS: IdeashellSettings = {
 	autoSyncSynced: false,
 	autoSyncDelay: 10,
 	stripWikilinks: true,
+	importFolder: 'ideashell',
+	importFilenamePattern: '{date} {title}',
+	importTemplatePath: 'Templates/ideashell.md',
+	importTimeRange: 'all',
+	importFrequency: 'manual',
+	importSkipExisting: true,
+	importTranscripts: true,
+	importRibbon: true,
+	importState: { lastRunAt: null, lastRunRange: null, pending: {}, lastResult: '' },
 };
 
 export function resolveEndpoint(s: IdeashellSettings): string {
@@ -111,7 +159,7 @@ export class IdeashellSettingTab extends PluginSettingTab {
 				}),
 			);
 
-		new Setting(containerEl).setName('Sync').setHeading();
+		new Setting(containerEl).setName('Send notes').setHeading();
 
 		new Setting(containerEl)
 			.setName('Source tag')
@@ -186,7 +234,155 @@ export class IdeashellSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}),
 			);
+
+		this.displayImport(containerEl);
 	}
+
+	private displayImport(containerEl: HTMLElement): void {
+		const s = this.plugin.settings;
+
+		new Setting(containerEl)
+			.setName('Import notes')
+			.setDesc('Bring ideashell notes, summaries and voice transcripts into the vault as Markdown files.')
+			.setHeading();
+
+		new Setting(containerEl)
+			.setName('Import now')
+			.setDesc(s.importState.lastRunAt || s.importState.lastResult ? lastRunText(s) : 'Not imported yet.')
+			.addButton((b) =>
+				b
+					.setButtonText('Import')
+					.setCta()
+					.onClick(async () => {
+						b.setDisabled(true);
+						await this.plugin.runImport({ manual: true });
+						b.setDisabled(false);
+						this.display();
+					}),
+			)
+			.addButton((b) =>
+				b
+					.setButtonText('Full re-scan')
+					.setTooltip('List every note in the time range again, not just new ones.')
+					.onClick(async () => {
+						b.setDisabled(true);
+						await this.plugin.runImport({ manual: true, full: true });
+						b.setDisabled(false);
+						this.display();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Sync frequency')
+			.setDesc('How often to import automatically.')
+			.addDropdown((d) =>
+				d
+					.addOptions({
+						manual: 'Manual only',
+						startup: 'On startup',
+						'1m': 'Every minute',
+						'15m': 'Every 15 minutes',
+						'30m': 'Every 30 minutes',
+						'60m': 'Every hour',
+						'12h': 'Every 12 hours',
+					})
+					.setValue(s.importFrequency)
+					.onChange(async (v) => {
+						s.importFrequency = v as ImportFrequency;
+						await this.plugin.saveSettings();
+						this.plugin.setupImportInterval();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Time range')
+			.setDesc('Only import notes created within this period.')
+			.addDropdown((d) =>
+				d
+					.addOptions({ all: 'All notes', '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', '365': 'Last year' })
+					.setValue(s.importTimeRange)
+					.onChange(async (v) => {
+						s.importTimeRange = v as ImportTimeRange;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Folder')
+			.setDesc('Vault folder for imported notes. Date tokens create subfolders, for example ideashell/{date:YYYY/MM}.')
+			.addText((t) =>
+				t
+					.setPlaceholder('Folder path')
+					.setValue(s.importFolder)
+					.onChange(async (v) => {
+						s.importFolder = v.trim();
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('File name pattern')
+			.setDesc('Supports {date}, {date:FORMAT}, {title} and {id}.')
+			.addText((t) =>
+				t
+					.setPlaceholder('{date} {title}')
+					.setValue(s.importFilenamePattern)
+					.onChange(async (v) => {
+						s.importFilenamePattern = v.trim();
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Template file')
+			.setDesc('Markdown template for imported notes. A default template is created at this path if it does not exist.')
+			.addText((t) =>
+				t
+					.setPlaceholder('Templates/ideashell.md')
+					.setValue(s.importTemplatePath)
+					.onChange(async (v) => {
+						s.importTemplatePath = v.trim();
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Skip existing notes')
+			.setDesc(
+				'Leave notes that are already in the vault untouched so your edits are kept. Turn off to overwrite them with the latest version from ideashell on every import.',
+			)
+			.addToggle((t) =>
+				t.setValue(s.importSkipExisting).onChange(async (v) => {
+					s.importSkipExisting = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName('Include transcripts')
+			.setDesc('Add the transcribed text of voice memos and recordings to each note.')
+			.addToggle((t) =>
+				t.setValue(s.importTranscripts).onChange(async (v) => {
+					s.importTranscripts = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName('Show import ribbon icon')
+			.addToggle((t) =>
+				t.setValue(s.importRibbon).onChange(async (v) => {
+					s.importRibbon = v;
+					await this.plugin.saveSettings();
+					this.plugin.updateImportRibbon();
+				}),
+			);
+	}
+}
+
+function lastRunText(s: IdeashellSettings): string {
+	const when = s.importState.lastRunAt ? new Date(s.importState.lastRunAt).toLocaleString() : 'never';
+	return `Last complete import: ${when}.${s.importState.lastResult ? ` Last run: ${s.importState.lastResult}.` : ''}`;
 }
 
 export function errorMessage(e: unknown): string {

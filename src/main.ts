@@ -2,8 +2,9 @@ import { Editor, MarkdownView, Menu, Notice, Plugin, TAbstractFile, TFile, TFold
 import { McpClient } from './mcp-client';
 import { IdeashellApi } from './ideashell-api';
 import { SyncService } from './sync';
-import { DEFAULT_SETTINGS, IdeashellSettingTab, IdeashellSettings, resolveEndpoint } from './settings';
+import { DEFAULT_SETTINGS, IMPORT_FREQUENCY_MS, IdeashellSettingTab, IdeashellSettings, errorMessage, resolveEndpoint } from './settings';
 import { FM_MARK } from './convert';
+import { ImportService, summarize } from './import';
 
 export default class IdeashellPlugin extends Plugin {
 	settings: IdeashellSettings = DEFAULT_SETTINGS;
@@ -12,11 +13,15 @@ export default class IdeashellPlugin extends Plugin {
 	private sync!: SyncService;
 	private statusEl: HTMLElement | null = null;
 	private pendingAuto = new Map<string, number>();
+	private importer!: ImportService;
+	private importIntervalId: number | null = null;
+	private importRibbonEl: HTMLElement | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.api = new IdeashellApi(() => this.getClient());
 		this.sync = new SyncService(this.app, this.api, () => this.settings);
+		this.importer = new ImportService(this.app, this.api, () => this.settings, () => this.saveSettings());
 		this.addSettingTab(new IdeashellSettingTab(this.app, this));
 		this.statusEl = this.addStatusBarItem();
 
@@ -58,6 +63,24 @@ export default class IdeashellPlugin extends Plugin {
 				}
 				return true;
 			},
+		});
+
+		this.addCommand({
+			id: 'import-notes',
+			name: 'Import new notes',
+			callback: () => void this.runImport({ manual: true }),
+		});
+
+		this.addCommand({
+			id: 'import-all-notes',
+			name: 'Import all notes (full re-scan)',
+			callback: () => void this.runImport({ manual: true, full: true }),
+		});
+
+		this.updateImportRibbon();
+		this.app.workspace.onLayoutReady(() => {
+			if (this.settings.importFrequency !== 'manual') void this.runImport({ manual: false });
+			this.setupImportInterval();
 		});
 
 		this.addCommand({
@@ -137,6 +160,68 @@ export default class IdeashellPlugin extends Plugin {
 	onunload(): void {
 		for (const t of this.pendingAuto.values()) window.clearTimeout(t);
 		this.pendingAuto.clear();
+		this.clearImportInterval();
+	}
+
+	/** Write the default template when the plugin is first enabled, so it can be customised before the first import. */
+	onUserEnable(): void {
+		void this.importer.loadTemplate(this.settings.importTemplatePath).catch((e: unknown) => {
+			console.error('[ideashell] failed to create the default template', e);
+		});
+	}
+
+	// --- import (ideashell → Obsidian) ---
+
+	async runImport(opts: { manual: boolean; full?: boolean }): Promise<void> {
+		if (this.importer.isRunning) {
+			if (opts.manual) new Notice('An ideashell import is already running');
+			return;
+		}
+		if (!this.settings.accessKey) {
+			if (opts.manual) new Notice('Add your ideashell API key in settings first');
+			return;
+		}
+		const notice = opts.manual ? new Notice('Importing from ideashell…', 0) : null;
+		try {
+			const result = await this.importer.run({
+				full: opts.full,
+				onProgress: (m) => notice?.setMessage(`ideashell: ${m}`),
+			});
+			notice?.hide();
+			if (!result) return;
+			const reason = result.failed > 0 && result.lastError ? ` — ${result.lastError}` : '';
+			if (opts.manual || result.created > 0 || result.failed > 0) {
+				new Notice(`ideashell import: ${summarize(result)}${reason}`, result.failed > 0 ? 12000 : 8000);
+			}
+		} catch (e) {
+			notice?.hide();
+			console.error('[ideashell] import failed', e);
+			if (opts.manual) new Notice(`ideashell import failed: ${errorMessage(e)}`, 12000);
+		}
+	}
+
+	setupImportInterval(): void {
+		this.clearImportInterval();
+		const ms = IMPORT_FREQUENCY_MS[this.settings.importFrequency];
+		if (!ms) return;
+		this.importIntervalId = window.setInterval(() => void this.runImport({ manual: false }), ms);
+		this.registerInterval(this.importIntervalId);
+	}
+
+	private clearImportInterval(): void {
+		if (this.importIntervalId !== null) {
+			window.clearInterval(this.importIntervalId);
+			this.importIntervalId = null;
+		}
+	}
+
+	updateImportRibbon(): void {
+		if (this.settings.importRibbon && !this.importRibbonEl) {
+			this.importRibbonEl = this.addRibbonIcon('download', 'Import notes from ideashell', () => void this.runImport({ manual: true }));
+		} else if (!this.settings.importRibbon && this.importRibbonEl) {
+			this.importRibbonEl.remove();
+			this.importRibbonEl = null;
+		}
 	}
 
 	// --- helpers ---
@@ -215,7 +300,14 @@ export default class IdeashellPlugin extends Plugin {
 	}, 200, true);
 
 	async loadSettings(): Promise<void> {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<IdeashellSettings>);
+		const data = ((await this.loadData()) ?? {}) as Partial<IdeashellSettings>;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+		// nested object: copy so runs never mutate the defaults
+		this.settings.importState = {
+			...DEFAULT_SETTINGS.importState,
+			...data.importState,
+			pending: { ...data.importState?.pending },
+		};
 	}
 
 	async saveSettings(): Promise<void> {
