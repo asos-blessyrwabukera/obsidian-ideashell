@@ -16,6 +16,8 @@ export default class IdeashellPlugin extends Plugin {
 	private importer!: ImportService;
 	private importIntervalId: number | null = null;
 	private importRibbonEl: HTMLElement | null = null;
+	/** Automatic imports report a failure once, not on every run, until one succeeds again. */
+	private autoImportFailureShown = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -190,13 +192,16 @@ export default class IdeashellPlugin extends Plugin {
 			notice?.hide();
 			if (!result) return;
 			const reason = result.failed > 0 && result.lastError ? ` — ${result.lastError}` : '';
-			if (opts.manual || result.created > 0 || result.failed > 0) {
+			const showFailure = result.failed > 0 && !this.autoImportFailureShown;
+			if (opts.manual || result.created > 0 || showFailure) {
 				new Notice(`ideashell import: ${summarize(result)}${reason}`, result.failed > 0 ? 12000 : 8000);
 			}
+			if (!opts.manual) this.autoImportFailureShown = result.failed > 0;
 		} catch (e) {
 			notice?.hide();
 			console.error('[ideashell] import failed', e);
-			if (opts.manual) new Notice(`ideashell import failed: ${errorMessage(e)}`, 12000);
+			if (opts.manual || !this.autoImportFailureShown) new Notice(`ideashell import failed: ${errorMessage(e)}`, 12000);
+			if (!opts.manual) this.autoImportFailureShown = true;
 		}
 	}
 

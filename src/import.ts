@@ -103,9 +103,14 @@ export class ImportService {
 		// Notes deferred on earlier runs because a recording was still transcribing.
 		const now = startedAt.getTime();
 		const pending = { ...state.pending };
+		/** Pending ids the listing did not return this time; they may have been deleted in ideashell. */
+		const pendingOnly = new Set<string>();
 		for (const [id, since] of Object.entries(pending)) {
 			if (now - Date.parse(since) > PENDING_TTL_MS) delete pending[id];
-			else if (!listed.some((n) => n.id === id)) listed.push({ id, title: '', created: '' });
+			else if (!listed.some((n) => n.id === id)) {
+				listed.push({ id, title: '', created: '' });
+				pendingOnly.add(id);
+			}
 		}
 
 		const todo = listed.filter((n) => {
@@ -124,6 +129,11 @@ export class ImportService {
 			opts.onProgress?.(`Importing ${++done}/${todo.length}…`);
 			try {
 				const detail = parseNoteDetail(await this.api.noteDetail(listedNote.id), listedNote);
+				if (pendingOnly.has(listedNote.id) && !detail.title && !detail.body && detail.transcripts.length === 0) {
+					// nothing usable came back (note deleted?) — stop re-checking it
+					delete pending[listedNote.id];
+					continue;
+				}
 				if (detail.transcribing) {
 					pending[listedNote.id] ??= startedAt.toISOString();
 					result.pending++;
@@ -133,6 +143,13 @@ export class ImportService {
 				const outcome = await this.writeNote(detail, template, folderPattern, existing);
 				result[outcome]++;
 			} catch (e) {
+				if (pendingOnly.has(listedNote.id)) {
+					// a deferred note that can no longer be read was most likely deleted in ideashell;
+					// drop it rather than failing every run until it expires
+					delete pending[listedNote.id];
+					console.warn('[ideashell] dropping deferred note that can no longer be read', listedNote.id, e);
+					continue;
+				}
 				result.failed++;
 				result.lastError = errorMessage(e);
 				console.error('[ideashell] import failed', listedNote.id, e);
