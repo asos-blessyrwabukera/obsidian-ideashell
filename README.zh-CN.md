@@ -35,6 +35,7 @@
 - 仍在转写中的笔记会推迟到转写完成后再导入。
 - 文件夹与文件名支持 `{date}`、`{date:格式}`、`{title}`、`{id}`，例如 `ideashell/{date:YYYY/MM}`。
 - 导入的笔记不会被发送回闪念贝壳；从 Obsidian 发送过的笔记也不会被导入覆盖。
+- 日记（Daily note）集成（默认关闭）：每条新导入的笔记会以链接形式写入其创建当天的日记，放在 `## ideashell` 标题下（标题不存在会自动添加）。日记文件夹与日期格式默认沿用 Obsidian 核心「日记」插件的设置；缺少的日记会按核心插件模板创建（可关闭）。已链接过的笔记不会重复添加。命令「Link imported notes in daily notes」可为之前导入的笔记补全链接。
 
 命令：「Import new notes」（只列出上次导入之后新建的笔记）与「Import all notes (full re-scan)」（重新扫描整个时间范围）。模板变量与全部设置项见[英文说明](README.md#import-notes-from-ideashell)。
 

@@ -25,6 +25,7 @@ Both directions deduplicate by ideashell note id, so repeating a sync never crea
 | **Smart deduplication** | Notes are tracked by `ideashell_id` anywhere in the vault, so moved or renamed notes are updated, not duplicated. |
 | **Preserve edits** | *Skip existing notes* (on by default) never touches a note that is already in the vault. |
 | **Transcripts** | Voice memo / recording transcripts are included (toggle). Notes still transcribing are imported once the text is ready. |
+| **Daily notes** | Optionally link each imported note from the daily note of the day it was created, under a heading such as `## ideashell`. |
 | **Dated folders** | Folder and file name patterns take `{date}`, `{date:FORMAT}`, `{title}`, `{id}` — e.g. `ideashell/{date:YYYY/MM}`. |
 
 ### Send to ideashell
@@ -112,6 +113,26 @@ created: {{ideashell_created}}
 {{/ideashell_attachments}}
 ```
 
+#### Daily notes
+
+Turn on **Link imported notes in daily notes** in settings. Each note created by an import is then linked from the daily note for the local date it was created in ideashell:
+
+```markdown
+## ideashell
+- 08:00 [[ideashell/2026-07-11 Standup thoughts|Standup thoughts]]
+- 09:05 [[ideashell/2026-07-11 Product idea|Product idea]]
+```
+
+- The daily notes folder and date format come from Obsidian's core **Daily notes** plugin. You can override both in this plugin's settings; without either, notes are named `YYYY-MM-DD` in the vault root.
+- Links go at the end of the section under *Heading*, which is added if the note does not have it. Leave *Heading* empty to append to the end of the note.
+- A missing daily note is created, using the core Daily notes template if one is set (`{{title}}`, `{{date}}`, `{{date:FORMAT}}`, `{{time}}` are filled in). Turn off *Create missing daily notes* to only link into daily notes that already exist.
+- A note already linked anywhere in its daily note is never added twice, so you can move or edit the lines freely. A line you delete is not added back by later imports. The command below does add it back.
+- Only notes created by an import are linked, not notes that were already in the vault. To link notes you imported earlier, run **Link imported notes in daily notes** from the command palette. It reads each note's `created` (or `date`) frontmatter, which the default template includes.
+- Link style (wikilink or Markdown, shortest or full path) follows Obsidian's *Files and links* settings.
+
+> [!warning]
+> With *Create missing daily notes* on, a daily note is created for every day that has an imported note. If you turn this feature on before importing all your history (or run the backfill command over a large history), that can mean many past daily notes. Turn *Create missing daily notes* off first if you don't want that.
+
 Imported notes are recognised by `ideashell_id` **without** `ideashell_hash` (only sending a note writes `ideashell_hash`). Don't add `ideashell_hash` to the template.
 
 ### Sync one note
@@ -177,6 +198,17 @@ ideashell_images: [ideashell-test/img/red.png]      # images already attached (n
 | Skip existing notes | on | Never overwrite a note already in the vault (matched by `ideashell_id` anywhere in the vault). Off = refresh it from ideashell on every import. |
 | Include transcripts | on | Fill `{{ideashell_transcript}}` with voice memo transcripts. |
 | Show import ribbon icon | on | Ribbon button that runs an import. |
+
+**Daily notes**
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Link imported notes in daily notes | off | Link notes created by an import from their creation-date daily note. |
+| Daily notes folder | core plugin | Folder of daily notes. Empty = the core Daily notes plugin's folder. |
+| Daily note date format | core plugin | Moment format of daily note names (may contain `/` for subfolders). Empty = the core plugin's format, else `YYYY-MM-DD`. |
+| Heading | `## ideashell` | Section the links are added to (created if missing). Empty = end of the note. |
+| Line format | `- {{time}} {{link}}` | One line per note; supports `{{time}}` (HH:mm), `{{link}}`, `{{title}}`. |
+| Create missing daily notes | on | Create the daily note when it does not exist. Off = skip days without one. |
 
 ## What is sent, and where
 
