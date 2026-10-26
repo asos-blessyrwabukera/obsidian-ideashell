@@ -75,6 +75,23 @@ export class IdeashellApi {
 		});
 	}
 
+	/**
+	 * One page of notes ordered newest first. `start_time` / `end_time` are ISO timestamps
+	 * bounding the creation time; the raw tool text is returned for `parseRecentNotes`.
+	 */
+	async recentNotes(args: { limit: number; startTime?: string; endTime?: string }): Promise<string> {
+		return this.client().callTool('recent_notes', {
+			limit: args.limit,
+			...(args.startTime ? { start_time: args.startTime } : {}),
+			...(args.endTime ? { end_time: args.endTime } : {}),
+		});
+	}
+
+	/** Full note: body plus memos (voice transcripts), audios and links. Raw text for `parseNoteDetail`. */
+	async noteDetail(noteId: string): Promise<string> {
+		return this.client().callTool('note_detail', { note_id: noteId, scope: 'full' });
+	}
+
 	async listFolders(): Promise<FolderInfo[]> {
 		const text = await this.client().callTool('folder_list', {});
 		// Lines look like: "- 📚 Reading #tag (pinned) [folder_id: 123]"

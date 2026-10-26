@@ -3,7 +3,7 @@
 	"name": "ideashell",
 	"version": "0.1.2",
 	"minAppVersion": "1.5.0",
-	"description": "Send notes to ideashell (闪念贝壳): text, tags, folders and images. Sync again to update the same note instead of duplicating it.",
+	"description": "Sync with ideashell (闪念贝壳): import notes, summaries and voice transcripts into your vault from a template, and send notes with tags, folders and images. Deduplicated by note id.",
 	"author": "ideashell",
 	"authorUrl": "https://ideashell.site",
 	"isDesktopOnly": false

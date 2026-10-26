@@ -25,6 +25,20 @@
 
 同步是**单向**的：Obsidian → 闪念贝壳。在闪念贝壳 App 里的修改不会回流到 Obsidian。
 
+### 从闪念贝壳导入（ideashell → Obsidian）
+
+- 将全部笔记（或最近 7 / 30 / 90 / 365 天）连同 AI 摘要和录音转写导入为 Markdown 文件。
+- 自动同步：仅手动（默认）、启动时，或每 1 分钟 / 15 分钟 / 30 分钟 / 1 小时 / 12 小时。
+- 基于模板：用 `{{ideashell_*}}` 变量和 `{{#变量}}…{{/变量}}` 条件块自定义 frontmatter 与正文（默认模板 `Templates/ideashell.md`）。
+- 去重：按 frontmatter 中的 `ideashell_id` 在整个库中查找，移动或重命名过的笔记不会重复导入。
+- 「跳过已存在的笔记」默认开启，保留你在 Obsidian 中的修改。
+- 仍在转写中的笔记会推迟到转写完成后再导入。
+- 文件夹与文件名支持 `{date}`、`{date:格式}`、`{title}`、`{id}`，例如 `ideashell/{date:YYYY/MM}`。
+- 导入的笔记不会被发送回闪念贝壳；从 Obsidian 发送过的笔记也不会被导入覆盖。
+- 日记（Daily note）集成（默认关闭）：每条新导入的笔记会以链接形式写入其创建当天的日记，放在 `## ideashell` 标题下（标题不存在会自动添加）。日记文件夹与日期格式默认沿用 Obsidian 核心「日记」插件的设置；缺少的日记会按核心插件模板创建（可关闭）。已链接过的笔记不会重复添加。命令「Link imported notes in daily notes」可为之前导入的笔记补全链接。
+
+命令：「Import new notes」（只列出上次导入之后新建的笔记）与「Import all notes (full re-scan)」（重新扫描整个时间范围）。模板变量与全部设置项见[英文说明](README.md#import-notes-from-ideashell)。
+
 ## 安装与设置
 
 1. 安装插件：第三方插件 → 搜索 **ideashell**；或用 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 添加本仓库地址。
