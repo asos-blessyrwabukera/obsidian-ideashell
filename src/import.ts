@@ -169,7 +169,9 @@ export class ImportService {
 		if (s.dailyNotesEnabled && createdNotes.length > 0) {
 			opts.onProgress?.('Linking daily notes…');
 			try {
-				result.linked = await this.daily.link(createdNotes);
+				const r = await this.daily.link(createdNotes);
+				result.linked = r.added;
+				if (r.errors.length > 0) result.lastError = `daily notes: ${r.errors[0]}`;
 			} catch (e) {
 				// the notes themselves are imported; "Link imported notes in daily notes" can redo this
 				result.lastError = `daily notes: ${errorMessage(e)}`;
@@ -244,7 +246,18 @@ export class ImportService {
 	 * Link every imported note in the vault from its daily note (backfill). The creation time is
 	 * read from the note's `created` frontmatter, falling back to `date`.
 	 */
-	async linkAllInDailyNotes(): Promise<{ linked: number; notes: number; undated: number }> {
+	/** Backfill daily-note links for every imported note. Returns null when an import is running. */
+	async linkAllInDailyNotes(): Promise<{ linked: number; notes: number; undated: number; errors: string[] } | null> {
+		if (this.running) return null;
+		this.running = true;
+		try {
+			return await this.collectAndLink();
+		} finally {
+			this.running = false;
+		}
+	}
+
+	private async collectAndLink(): Promise<{ linked: number; notes: number; undated: number; errors: string[] }> {
 		await this.waitForMetadata();
 		const entries: DailyEntry[] = [];
 		let undated = 0;
@@ -262,7 +275,8 @@ export class ImportService {
 			const title: unknown = fm?.title;
 			entries.push({ file, title: typeof title === 'string' ? title : file.basename, created });
 		}
-		return { linked: await this.daily.link(entries), notes: entries.length, undated };
+		const r = await this.daily.link(entries);
+		return { linked: r.added, notes: entries.length, undated, errors: r.errors };
 	}
 
 	/** `path`, or a variant with the short id / a counter when another file already uses it. */

@@ -50,8 +50,8 @@ export class DailyNoteLinker {
 		return normalizePath(cfg.folder ? `${cfg.folder}/${name}.md` : `${name}.md`);
 	}
 
-	/** Link every entry from its daily note. Returns the number of links added. */
-	async link(entries: DailyEntry[]): Promise<number> {
+	/** Link every entry from its daily note. Returns the number of links added and per-daily-note errors. */
+	async link(entries: DailyEntry[]): Promise<{ added: number; errors: string[] }> {
 		const cfg = this.config();
 		const byPath = new Map<string, { date: moment.Moment; entries: DailyEntry[] }>();
 		for (const e of entries) {
@@ -65,10 +65,17 @@ export class DailyNoteLinker {
 		}
 
 		let added = 0;
+		const errors: string[] = [];
 		for (const [path, group] of byPath) {
-			added += await this.linkInto(path, group.date, group.entries, cfg);
+			// one unwritable daily note must not stop the others
+			try {
+				added += await this.linkInto(path, group.date, group.entries, cfg);
+			} catch (e) {
+				console.error(`[ideashell] linking daily note ${path} failed`, e);
+				errors.push(`${path}: ${e instanceof Error ? e.message : String(e)}`);
+			}
 		}
-		return added;
+		return { added, errors };
 	}
 
 	private async linkInto(path: string, date: moment.Moment, entries: DailyEntry[], cfg: DailyNoteConfig): Promise<number> {
@@ -118,7 +125,14 @@ export class DailyNoteLinker {
 			const tpl = this.app.metadataCache.getFirstLinkpathDest(cfg.template.replace(/\.md$/, ''), '');
 			if (tpl) content = expandCoreTemplate(await this.app.vault.read(tpl), date, cfg.format);
 		}
-		return this.app.vault.create(path, content);
+		try {
+			return await this.app.vault.create(path, content);
+		} catch (e) {
+			// another plugin (e.g. core Daily notes on startup) may have just created it
+			const now = this.app.vault.getAbstractFileByPath(path);
+			if (now instanceof TFile) return now;
+			throw e;
+		}
 	}
 
 	private async ensureFolder(folderPath: string): Promise<void> {

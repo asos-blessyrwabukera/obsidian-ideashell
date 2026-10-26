@@ -217,12 +217,21 @@ export default class IdeashellPlugin extends Plugin {
 	}
 
 	private async linkDailyNotes(): Promise<void> {
+		if (this.importer.isRunning) {
+			new Notice('An import is already running. Try again when it finishes.');
+			return;
+		}
 		const notice = new Notice('Linking imported notes in daily notes…', 0);
 		try {
 			const r = await this.importer.linkAllInDailyNotes();
 			notice.hide();
+			if (!r) {
+				new Notice('An import is already running. Try again when it finishes.');
+				return;
+			}
 			const undated = r.undated > 0 ? ` ${r.undated} imported notes have no created/date frontmatter and were skipped.` : '';
-			new Notice(`Added ${r.linked} links to daily notes (${r.notes} imported notes checked).${undated}`, 8000);
+			const failed = r.errors.length > 0 ? ` ${r.errors.length} daily notes could not be updated (first: ${r.errors[0]}).` : '';
+			new Notice(`Added ${r.linked} links to daily notes (${r.notes} imported notes checked).${undated}${failed}`, r.errors.length > 0 ? 15000 : 8000);
 		} catch (e) {
 			notice.hide();
 			console.error('[ideashell] daily note linking failed', e);
