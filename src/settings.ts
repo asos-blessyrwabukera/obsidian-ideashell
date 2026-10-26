@@ -63,6 +63,20 @@ export interface IdeashellSettings {
 	importTranscripts: boolean;
 	importRibbon: boolean;
 	importState: ImportState;
+
+	// --- daily notes ---
+	/** Link newly imported notes from the daily note of the day they were created. */
+	dailyNotesEnabled: boolean;
+	/** Daily notes folder; empty = the core Daily notes plugin's folder. */
+	dailyNotesFolder: string;
+	/** moment format of daily note names; empty = the core Daily notes plugin's format. */
+	dailyNotesFormat: string;
+	/** Heading the links go under (added when missing); empty = end of the note. */
+	dailyNotesHeading: string;
+	/** Line per note; supports {{time}}, {{link}}, {{title}}. */
+	dailyNotesLine: string;
+	/** Create the daily note when it does not exist yet. */
+	dailyNotesCreate: boolean;
 }
 
 export const DEFAULT_SETTINGS: IdeashellSettings = {
@@ -84,6 +98,12 @@ export const DEFAULT_SETTINGS: IdeashellSettings = {
 	importTranscripts: true,
 	importRibbon: true,
 	importState: { lastRunAt: null, lastRunRange: null, pending: {}, lastResult: '' },
+	dailyNotesEnabled: false,
+	dailyNotesFolder: '',
+	dailyNotesFormat: '',
+	dailyNotesHeading: '## ideashell',
+	dailyNotesLine: '- {{time}} {{link}}',
+	dailyNotesCreate: true,
 };
 
 export function resolveEndpoint(s: IdeashellSettings): string {
@@ -375,6 +395,92 @@ export class IdeashellSettingTab extends PluginSettingTab {
 					s.importRibbon = v;
 					await this.plugin.saveSettings();
 					this.plugin.updateImportRibbon();
+				}),
+			);
+
+		this.displayDailyNotes(containerEl);
+	}
+
+	private displayDailyNotes(containerEl: HTMLElement): void {
+		const s = this.plugin.settings;
+
+		new Setting(containerEl)
+			.setName('Daily notes')
+			.setDesc('Link imported notes from the daily note of the day they were created.')
+			.setHeading();
+
+		new Setting(containerEl)
+			.setName('Link imported notes in daily notes')
+			.setDesc('Applies to notes created by an import. For notes imported earlier, run the matching command from the command palette.')
+			.addToggle((t) =>
+				t.setValue(s.dailyNotesEnabled).onChange(async (v) => {
+					s.dailyNotesEnabled = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		const core = this.plugin.dailyNoteConfig();
+		new Setting(containerEl)
+			.setName('Daily notes folder')
+			.setDesc('Leave empty to use the folder from the core daily notes plugin.')
+			.addText((t) =>
+				t
+					.setPlaceholder(core.folder || 'Vault root')
+					.setValue(s.dailyNotesFolder)
+					.onChange(async (v) => {
+						s.dailyNotesFolder = v.trim();
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Daily note date format')
+			.setDesc('Moment.js format of daily note names. Leave empty to use the core daily notes plugin format.')
+			.addText((t) =>
+				t
+					.setPlaceholder(core.format)
+					.setValue(s.dailyNotesFormat)
+					.onChange(async (v) => {
+						s.dailyNotesFormat = v.trim();
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Heading')
+			.setDesc('Links are added at the end of this section; the heading is added if missing. Leave empty to append to the end of the note.')
+			.addText((t) =>
+				t
+					.setPlaceholder('## Section')
+					.setValue(s.dailyNotesHeading)
+					.onChange(async (v) => {
+						s.dailyNotesHeading = v.trim();
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Line format')
+			.setDesc('One line per note. Supports {{time}}, {{link}} and {{title}}.')
+			.addText((t) =>
+				t
+					.setPlaceholder('- {{time}} {{link}}')
+					.setValue(s.dailyNotesLine)
+					.onChange(async (v) => {
+						s.dailyNotesLine = v;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Create missing daily notes')
+			.setDesc(
+				'Create the daily note (from the core daily notes template, if set) when it does not exist. When off, notes from days without a daily note are not linked.',
+			)
+			.addToggle((t) =>
+				t.setValue(s.dailyNotesCreate).onChange(async (v) => {
+					s.dailyNotesCreate = v;
+					await this.plugin.saveSettings();
 				}),
 			);
 	}

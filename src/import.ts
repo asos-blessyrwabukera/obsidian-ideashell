@@ -5,6 +5,8 @@ import { DEFAULT_TEMPLATE, IMPORT_ID_KEY, applyTemplate, buildVariables, ensureI
 import { FM_HASH } from './convert';
 import type { IdeashellSettings, ImportTimeRange } from './settings';
 import { errorMessage } from './settings';
+import { DailyEntry, DailyNoteLinker } from './daily-notes';
+import { isImported } from './sync';
 
 /** Notes per `recent_notes` page. */
 const PAGE_SIZE = 20;
@@ -25,6 +27,8 @@ export interface ImportResult {
 	skipped: number;
 	pending: number;
 	failed: number;
+	/** Links added to daily notes. */
+	linked: number;
 	lastError: string | null;
 }
 
@@ -51,13 +55,16 @@ interface Existing {
 export class ImportService {
 	private running = false;
 	private ensuredFolders = new Set<string>();
+	readonly daily: DailyNoteLinker;
 
 	constructor(
 		private app: App,
 		private api: IdeashellApi,
 		private settings: () => IdeashellSettings,
 		private save: () => Promise<void>,
-	) {}
+	) {
+		this.daily = new DailyNoteLinker(app, settings);
+	}
 
 	get isRunning(): boolean {
 		return this.running;
@@ -77,7 +84,7 @@ export class ImportService {
 	private async doRun(opts: ImportOptions): Promise<ImportResult> {
 		const s = this.settings();
 		const state = s.importState;
-		const result: ImportResult = { created: 0, updated: 0, unchanged: 0, skipped: 0, pending: 0, failed: 0, lastError: null };
+		const result: ImportResult = { created: 0, updated: 0, unchanged: 0, skipped: 0, pending: 0, failed: 0, linked: 0, lastError: null };
 		const startedAt = new Date();
 
 		const template = await this.loadTemplate(s.importTemplatePath);
@@ -124,6 +131,7 @@ export class ImportService {
 			return true;
 		});
 
+		const createdNotes: DailyEntry[] = [];
 		let done = 0;
 		for (const listedNote of todo) {
 			opts.onProgress?.(`Importing ${++done}/${todo.length}…`);
@@ -140,8 +148,9 @@ export class ImportService {
 					continue;
 				}
 				delete pending[listedNote.id];
-				const outcome = await this.writeNote(detail, template, folderPattern, existing);
+				const { outcome, file } = await this.writeNote(detail, template, folderPattern, existing);
 				result[outcome]++;
+				if (outcome === 'created') createdNotes.push({ file, title: detail.title, created: parseCreated(detail.created) });
 			} catch (e) {
 				if (pendingOnly.has(listedNote.id)) {
 					// a deferred note that can no longer be read was most likely deleted in ideashell;
@@ -155,6 +164,17 @@ export class ImportService {
 				console.error('[ideashell] import failed', listedNote.id, e);
 			}
 			await sleep(PACE_MS);
+		}
+
+		if (s.dailyNotesEnabled && createdNotes.length > 0) {
+			opts.onProgress?.('Linking daily notes…');
+			try {
+				result.linked = await this.daily.link(createdNotes);
+			} catch (e) {
+				// the notes themselves are imported; "Link imported notes in daily notes" can redo this
+				result.lastError = `daily notes: ${errorMessage(e)}`;
+				console.error('[ideashell] daily note linking failed', e);
+			}
 		}
 
 		state.pending = pending;
@@ -204,20 +224,45 @@ export class ImportService {
 		template: string,
 		folderPattern: string,
 		existing: Map<string, Existing>,
-	): Promise<'created' | 'updated' | 'unchanged'> {
+	): Promise<{ outcome: 'created' | 'updated' | 'unchanged'; file: TFile }> {
 		const s = this.settings();
 		const content = ensureImportId(applyTemplate(template, buildVariables(note, s.importTranscripts)), note.id);
 		const hit = existing.get(note.id);
 		if (hit) {
-			if ((await this.app.vault.read(hit.file)) === content) return 'unchanged';
+			if ((await this.app.vault.read(hit.file)) === content) return { outcome: 'unchanged', file: hit.file };
 			await this.app.vault.modify(hit.file, content);
-			return 'updated';
+			return { outcome: 'updated', file: hit.file };
 		}
 		const { folder, path } = resolveNotePath(folderPattern, s.importFilenamePattern || '{date} {title}', note);
 		await this.ensureFolder(folder);
 		const file = await this.app.vault.create(this.freePath(path, note.id), content);
 		existing.set(note.id, { file, sent: false });
-		return 'created';
+		return { outcome: 'created', file };
+	}
+
+	/**
+	 * Link every imported note in the vault from its daily note (backfill). The creation time is
+	 * read from the note's `created` frontmatter, falling back to `date`.
+	 */
+	async linkAllInDailyNotes(): Promise<{ linked: number; notes: number; undated: number }> {
+		await this.waitForMetadata();
+		const entries: DailyEntry[] = [];
+		let undated = 0;
+		const templatePath = normalizePath(this.settings().importTemplatePath.trim() || 'Templates/ideashell.md');
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			if (file.path === templatePath) continue;
+			const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+			if (!isImported(fm)) continue;
+			const raw: unknown = fm?.created ?? fm?.date;
+			const created = typeof raw === 'string' ? parseCreated(raw) : null;
+			if (!created?.isValid()) {
+				undated++;
+				continue;
+			}
+			const title: unknown = fm?.title;
+			entries.push({ file, title: typeof title === 'string' ? title : file.basename, created });
+		}
+		return { linked: await this.daily.link(entries), notes: entries.length, undated };
 	}
 
 	/** `path`, or a variant with the short id / a counter when another file already uses it. */
@@ -297,6 +342,7 @@ export function summarize(r: ImportResult): string {
 	const parts = [`${r.created} created`, `${r.updated} updated`, `${r.unchanged} unchanged`, `${r.skipped} skipped`];
 	if (r.pending > 0) parts.push(`${r.pending} still transcribing`);
 	if (r.failed > 0) parts.push(`${r.failed} failed`);
+	if (r.linked > 0) parts.push(`${r.linked} linked in daily notes`);
 	return parts.join(', ');
 }
 

@@ -79,6 +79,12 @@ export default class IdeashellPlugin extends Plugin {
 			callback: () => void this.runImport({ manual: true, full: true }),
 		});
 
+		this.addCommand({
+			id: 'link-daily-notes',
+			name: 'Link imported notes in daily notes',
+			callback: () => void this.linkDailyNotes(),
+		});
+
 		this.updateImportRibbon();
 		this.app.workspace.onLayoutReady(() => {
 			if (this.settings.importFrequency !== 'manual') void this.runImport({ manual: false });
@@ -202,6 +208,25 @@ export default class IdeashellPlugin extends Plugin {
 			console.error('[ideashell] import failed', e);
 			if (opts.manual || !this.autoImportFailureShown) new Notice(`ideashell import failed: ${errorMessage(e)}`, 12000);
 			if (!opts.manual) this.autoImportFailureShown = true;
+		}
+	}
+
+	/** Effective daily note folder / format (plugin settings, else the core Daily notes plugin). */
+	dailyNoteConfig(): { folder: string; format: string } {
+		return this.importer.daily.config();
+	}
+
+	private async linkDailyNotes(): Promise<void> {
+		const notice = new Notice('Linking imported notes in daily notes…', 0);
+		try {
+			const r = await this.importer.linkAllInDailyNotes();
+			notice.hide();
+			const undated = r.undated > 0 ? ` ${r.undated} imported notes have no created/date frontmatter and were skipped.` : '';
+			new Notice(`Added ${r.linked} links to daily notes (${r.notes} imported notes checked).${undated}`, 8000);
+		} catch (e) {
+			notice.hide();
+			console.error('[ideashell] daily note linking failed', e);
+			new Notice(`Linking daily notes failed: ${errorMessage(e)}`, 12000);
 		}
 	}
 
