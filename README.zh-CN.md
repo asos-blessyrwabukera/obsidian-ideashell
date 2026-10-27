@@ -46,13 +46,13 @@
 - 去重：每条任务都带着待办 id（任务文件的 frontmatter 里是 `ideashell_todo_id`，任务行末尾是块 id `^ideashell-<id>`）。再次导入只会原地更新，不会产生重复；没有这个标记的任务一律不动。
 - 保留你的修改：只写入闪念贝壳里自上次导入以来发生变化的字段。你在 Obsidian 里完成的任务不会被改回未完成；你删掉的任务不会再被导入。
 - 在闪念贝壳里完成的待办，会在 Obsidian 里标为完成，完成日期记为导入当天（闪念贝壳不提供完成时间）。
-- 双向完成（「Two-way completion」，默认关闭）：在 Obsidian 里完成一条导入的任务，闪念贝壳里的待办也会被标为完成。除此之外不会向闪念贝壳写回任何内容。
+- 双向完成（「Two-way completion」，默认开启）：在 Obsidian 里，或在 TaskForge 等直接编辑 vault 文件的任务 App 里完成一条导入的任务，闪念贝壳里的待办也会被标为完成（在其它 App 里完成的，下次导入时同步，建议打开「Include in scheduled import」）。除此之外不会向闪念贝壳写回任何内容。
 - 待办内容按纯文本处理：去掉换行、开头的 `- [ ]` 和 Tasks 的 emoji 标记，并转义 `[[`、`<`、`#标签` 和 `%%`，避免变成链接、HTML、标签或注释。
 
 示例（任务行格式）：
 
 ```markdown
-- [ ] Validate swap opportunity numbers with Emma after the MBR #task #ideashell 📅 2026-10-28 ^ideashell-ba277130-68cc-4feb-975f-b4584f770217
+- [ ] Validate swap opportunity numbers with Emma after the MBR #task #ideashell ⏳ 2026-10-28 ^ideashell-ba277130-68cc-4feb-975f-b4584f770217
 ```
 
 **待办设置项**
@@ -62,17 +62,17 @@
 | Enable to-do import | 关 | 显示「Import to-dos」命令和下面的设置。 |
 | Include in scheduled import | 关 | 定时导入时也导入待办。 |
 | Task format | 每条待办一个 TaskNotes 文件 | 或选 Tasks emoji 格式的任务行。 |
-| Task folder | `ideashell/Todos` | 任务文件：新任务所在文件夹。移走的文件仍会被更新。 |
-| Open status / Done status | `open` / `done` | 任务文件：未完成、已完成对应的 status 值。 |
+| Task folder | `60 Tasks` | 任务文件：新任务所在文件夹。移走或归档的文件仍会被更新。 |
+| Open status / Done status | `ready` / `done` | 任务文件：未完成、已完成对应的 status 值。 |
 | Include time | 开 | 任务文件：把待办时间写在日期后面（`2026-10-28T09:00:00`）。任务行不带时间（Tasks 格式没有时间）。 |
 | Target | 固定文件 | 任务行：写进一个文件，或写进待办日期当天的日记（文件夹和格式取「日记」设置）。没有日期的待办写进文件。 |
 | To-dos file | `ideashell/Todos.md` | 任务行：固定文件路径。 |
 | Heading | `## ideashell` | 任务行：新行加在这个标题下，没有会自动添加。 |
-| Date field | Due | 待办日期写成截止日期（`📅`）还是计划日期（`⏳`）。 |
+| Date field | Scheduled | 待办日期写成计划日期（`⏳`）还是截止日期（`📅`）。闪念贝壳待办多为计划而非截止，默认写成计划日期。 |
 | Task tag | `task` | 每条任务都需要的标签：TaskNotes 的任务标签，或 Tasks 插件的 global filter。留空则不加。 |
 | Extra tag | `ideashell` | 每条导入的待办额外加的标签。留空则不加。 |
 | Import completed to-dos | 关 | 同时导入已完成的待办。之前导入过的任务无论如何都会同步完成状态。 |
-| Two-way completion | 关 | 在 Obsidian 里完成任务时，也在闪念贝壳里标为完成。 |
+| Two-way completion | 开 | 在 Obsidian 或 TaskForge 等任务 App 里完成任务时，也在闪念贝壳里标为完成。 |
 
 ## 安装与设置
 

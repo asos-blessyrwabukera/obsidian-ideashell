@@ -50,7 +50,7 @@ Both directions deduplicate by ideashell note id, so repeating a sync never crea
 | **Tasks, not notes** | ideashell to-dos become tasks: one [TaskNotes](https://github.com/callumalpass/tasknotes) file per to-do (also read by TaskForge), or one [Tasks](https://publish.obsidian.md/tasks/) emoji-format line per to-do in a single file or in the daily note of the to-do's date. |
 | **No duplicates** | Each task carries the to-do id (`ideashell_todo_id` in frontmatter, or a `^ideashell-<id>` block id on the line). Re-imports update tasks in place and never touch tasks without the marker. |
 | **Your edits win** | Only fields that changed in ideashell since the last import are written. A task you complete in Obsidian is never reopened, and a task you delete is not brought back. |
-| **Two-way completion** (off by default) | Completing an imported task in Obsidian marks it complete in ideashell. Nothing else is sent back. |
+| **Two-way completion** (on by default) | Completing an imported task in Obsidian, or in a task app that edits the vault files such as TaskForge, marks it complete in ideashell. Nothing else is sent back. |
 
 The two directions are kept apart: a note imported from ideashell is never sent back (that would overwrite the original with the rendered template), and a note you sent from Obsidian is never overwritten by an import.
 
@@ -149,14 +149,14 @@ Imported notes are recognised by `ideashell_id` **without** `ideashell_hash` (on
 
 Turn on **Enable to-do import** in settings, then run **Import to-dos** from the command palette, or press **Import to-dos** in settings. To import to-dos on the import schedule too, turn on **Include in scheduled import**.
 
-Here is a to-do imported as a TaskNotes file, with *Task folder* set to your TaskNotes folder:
+Here is a to-do imported as a TaskNotes file with the default settings:
 
 ```markdown
 ---
 type: task
-status: open
+status: ready
 priority: normal
-due: '2026-10-28T09:00:00'
+scheduled: '2026-10-28T09:00:00'
 tags:
   - task
   - ideashell
@@ -173,15 +173,15 @@ The same to-do as a task line (*Task format* set to *Task line*):
 ```markdown
 ## ideashell
 
-- [ ] Validate swap opportunity numbers with Emma after the MBR #task #ideashell 📅 2026-10-28 ^ideashell-ba277130-68cc-4feb-975f-b4584f770217
-- [x] Get YouTube to Obsidian vault working #task #ideashell 📅 2026-10-26 ✅ 2026-10-27 ^ideashell-0f07281c-cea6-4d0f-9dc5-2305d8763428
+- [ ] Validate swap opportunity numbers with Emma after the MBR #task #ideashell ⏳ 2026-10-28 ^ideashell-ba277130-68cc-4feb-975f-b4584f770217
+- [x] Get YouTube to Obsidian vault working #task #ideashell ⏳ 2026-10-26 ✅ 2026-10-27 ^ideashell-0f07281c-cea6-4d0f-9dc5-2305d8763428
 ```
 
 On a re-import, each task is handled like this:
 
 - **Text, date or time changed in ideashell:** only those fields are updated. A TaskNotes file is renamed to the new text; a task line is rewritten.
 - **Completed in ideashell:** the task is marked done, with today as the completion date, because ideashell does not report when a to-do was completed.
-- **Completed in Obsidian:** the task stays done. With **Two-way completion** on, the to-do is also marked complete in ideashell, a few seconds after you complete the task or on the next import.
+- **Completed in Obsidian:** the task stays done. With **Two-way completion** on (the default), the to-do is also marked complete in ideashell: a few seconds after you complete the task in Obsidian, or on the next import when it was completed elsewhere, for example in the TaskForge app. Turn on *Include in scheduled import* so those are picked up without running the command. Archived tasks (moved to another folder) are still found.
 - **Reopened in ideashell after both sides were done:** the task is reopened in Obsidian only when two-way completion is on.
 - **Deleted from the vault:** the to-do is not imported again.
 
@@ -269,17 +269,17 @@ ideashell_images: [ideashell-test/img/red.png]      # images already attached (n
 | Enable to-do import | off | Shows the *Import to-dos* command and the settings below. |
 | Include in scheduled import | off | Also import to-dos on every scheduled import (see *Sync frequency*). |
 | Task format | TaskNotes file per to-do | Or *Task line* in the Tasks emoji format. |
-| Task folder | `ideashell/Todos` | TaskNotes files: folder for new tasks. Moved files are still updated. |
-| Open status / Done status | `open` / `done` | TaskNotes files: status values for open and completed to-dos. |
+| Task folder | `60 Tasks` | TaskNotes files: folder for new tasks. Moved or archived files are still updated. |
+| Open status / Done status | `ready` / `done` | TaskNotes files: status values for open and completed to-dos. |
 | Include time | on | TaskNotes files: write the to-do time with the date (`2026-10-28T09:00:00`). Task lines never carry a time, since the Tasks format has none. |
 | Target | Single file | Task lines: one file, or the daily note of the to-do's date (folder and format from *Daily notes*). Undated to-dos go in the file. |
 | To-dos file | `ideashell/Todos.md` | Task lines: the single file. |
 | Heading | `## ideashell` | Task lines: new lines go under this heading, which is added when missing. |
-| Date field | Due | Whether the to-do date becomes the due (`📅`) or scheduled (`⏳`) date. |
+| Date field | Scheduled | Whether the to-do date becomes the scheduled (`⏳`) or due (`📅`) date. ideashell to-dos are plans rather than deadlines, so scheduled is the default. |
 | Task tag | `task` | The tag every task needs: TaskNotes' task tag, or the Tasks plugin global filter. Empty = none. |
 | Extra tag | `ideashell` | Added to every imported to-do. Empty = none. |
 | Import completed to-dos | off | Also add to-dos that are already completed. Tasks imported earlier are marked done either way. |
-| Two-way completion | off | Mark to-dos complete in ideashell when you complete them in Obsidian. |
+| Two-way completion | on | Mark to-dos complete in ideashell when you complete them in Obsidian or a task app such as TaskForge. |
 
 ## What is sent, and where
 

@@ -149,18 +149,18 @@ export const DEFAULT_SETTINGS: IdeashellSettings = {
 	todosEnabled: false,
 	todosAutoSync: false,
 	todosFormat: 'tasknotes',
-	todosFolder: 'ideashell/Todos',
+	todosFolder: '60 Tasks',
 	todosTarget: 'file',
 	todosFile: 'ideashell/Todos.md',
 	todosHeading: '## ideashell',
 	todosIncludeCompleted: false,
 	todosTaskTag: 'task',
 	todosTag: 'ideashell',
-	todosDateField: 'due',
+	todosDateField: 'scheduled',
 	todosIncludeTime: true,
-	todosOpenStatus: 'open',
+	todosOpenStatus: 'ready',
 	todosDoneStatus: 'done',
-	todosTwoWay: false,
+	todosTwoWay: true,
 	todoState: { synced: {}, lastRunAt: null, lastResult: '' },
 };
 
@@ -622,8 +622,8 @@ export class IdeashellSettingTab extends PluginSettingTab {
 			);
 
 		if (s.todosFormat === 'tasknotes') {
-			text('Task folder', 'Folder for new task files. Files you move elsewhere are still updated.', 'ideashell/Todos', () => s.todosFolder, (v) => (s.todosFolder = v));
-			text('Open status', 'TaskNotes status for open to-dos.', 'open', () => s.todosOpenStatus, (v) => (s.todosOpenStatus = v || 'open'));
+			text('Task folder', 'Folder for new task files. Files you move elsewhere, including archived tasks, are still updated.', '60 Tasks', () => s.todosFolder, (v) => (s.todosFolder = v));
+			text('Open status', 'TaskNotes status for open to-dos.', 'ready', () => s.todosOpenStatus, (v) => (s.todosOpenStatus = v || 'ready'));
 			text('Done status', 'TaskNotes status for completed to-dos.', 'done', () => s.todosDoneStatus, (v) => (s.todosDoneStatus = v || 'done'));
 			new Setting(containerEl)
 				.setName('Include time')
@@ -680,7 +680,7 @@ export class IdeashellSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Two-way completion')
 			.setDesc(
-				'When you complete an imported task in Obsidian, mark it complete in ideashell too. Nothing else is sent back. With this off, tasks you complete in Obsidian stay done, but ideashell is not changed.',
+				'When you complete an imported task in Obsidian or a task app that edits the vault, mark it complete in ideashell too. Nothing else is sent back. With this off, tasks you complete in Obsidian stay done, but ideashell is not changed.',
 			)
 			.addToggle((t) =>
 				t.setValue(s.todosTwoWay).onChange(async (v) => {
