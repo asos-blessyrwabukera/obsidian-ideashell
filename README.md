@@ -49,8 +49,8 @@ Both directions deduplicate by ideashell note id, so repeating a sync never crea
 |---|---|
 | **Tasks, not notes** | ideashell to-dos become tasks: one [TaskNotes](https://github.com/callumalpass/tasknotes) file per to-do (also read by TaskForge), or one [Tasks](https://publish.obsidian.md/tasks/) emoji-format line per to-do in a single file or in the daily note of the to-do's date. |
 | **No duplicates** | Each task carries the to-do id (`ideashell_todo_id` in frontmatter, or a `^ideashell-<id>` block id on the line). Re-imports update tasks in place and never touch tasks without the marker. |
-| **Your edits win** | Only fields that changed in ideashell since the last import are written. A task you complete in Obsidian is never reopened, and a task you delete is not brought back. |
-| **Two-way completion** (on by default) | Completing an imported task in Obsidian, or in a task app that edits the vault files such as TaskForge, marks it complete in ideashell. Nothing else is sent back. |
+| **Two-way sync** (on by default) | Edit the text, date or time of an imported task, or complete or reopen it, in Obsidian or in a task app that edits the vault files such as TaskForge, and ideashell is updated. When the same field changed on both sides, ideashell wins. |
+| **Field by field** | Each sync writes only the fields that changed, so an edit on one side never undoes a different edit on the other. A task you delete from the vault is not brought back. |
 
 The two directions are kept apart: a note imported from ideashell is never sent back (that would overwrite the original with the rendered template), and a note you sent from Obsidian is never overwritten by an import.
 
@@ -177,13 +177,14 @@ The same to-do as a task line (*Task format* set to *Task line*):
 - [x] Get YouTube to Obsidian vault working #task #ideashell ⏳ 2026-10-26 ✅ 2026-10-27 ^ideashell-0f07281c-cea6-4d0f-9dc5-2305d8763428
 ```
 
-On a re-import, each task is handled like this:
+The plugin remembers the values it last synced for each to-do, so on every sync it knows which side changed each field (text, date, time, completed):
 
-- **Text, date or time changed in ideashell:** only those fields are updated. A TaskNotes file is renamed to the new text; a task line is rewritten.
-- **Completed in ideashell:** the task is marked done, with today as the completion date, because ideashell does not report when a to-do was completed.
-- **Completed in Obsidian:** the task stays done. With **Two-way completion** on (the default), the to-do is also marked complete in ideashell: a few seconds after you complete the task in Obsidian, or on the next import when it was completed elsewhere, for example in the TaskForge app. Turn on *Include in scheduled import* so those are picked up without running the command. Archived tasks (moved to another folder) are still found.
-- **Reopened in ideashell after both sides were done:** the task is reopened in Obsidian only when two-way completion is on.
-- **Deleted from the vault:** the to-do is not imported again.
+- **Changed in ideashell:** the task in the vault is updated. A TaskNotes file is renamed to the new text; a task line is rewritten. A to-do completed in ideashell gets today as its completion date, because ideashell does not report when it was completed.
+- **Changed in the vault:** with **Two-way sync** on (the default), ideashell is updated with `todo_update`. For TaskNotes files the text is the file name, and the date and time come from the date field. Task lines have no time, so their time is never sent. ideashell cannot clear a date, so removing one in the vault is not sent.
+- **Changed on both sides:** ideashell wins, and the vault is updated to match.
+- **Deleted from the vault:** the to-do is not imported again. Archived tasks (moved to another folder) are still found.
+
+An edit to an imported task in Obsidian is synced about five seconds after you stop editing. Edits made while Obsidian is closed, for example in the TaskForge app, are synced on the next to-do import, so turn on *Include in scheduled import*. With two-way sync off, your edits stay in the vault and ideashell is not changed.
 
 To-do text is treated as data, not markup. Line breaks, leading `- [ ]` markers and Tasks emoji are removed, and `[[`, `<`, `#tag` and `%%` are escaped so they cannot become links, HTML, tags or comments.
 
@@ -279,14 +280,14 @@ ideashell_images: [ideashell-test/img/red.png]      # images already attached (n
 | Task tag | `task` | The tag every task needs: TaskNotes' task tag, or the Tasks plugin global filter. Empty = none. |
 | Extra tag | `ideashell` | Added to every imported to-do. Empty = none. |
 | Import completed to-dos | off | Also add to-dos that are already completed. Tasks imported earlier are marked done either way. |
-| Two-way completion | on | Mark to-dos complete in ideashell when you complete them in Obsidian or a task app such as TaskForge. |
+| Two-way sync | on | Send edits to imported tasks (text, date, time, completed or reopened) to ideashell. ideashell wins when both sides changed. |
 
 ## What is sent, and where
 
 This plugin makes network requests **only** to the ideashell MCP endpoint you select in settings
 (`https://api.ideashell.cn/ideashell/mcp` for China, `https://api.ideashell.com/ideashell/mcp` for Global, or a custom URL).
 It sends the title, body, tags, folder name and embedded images of the notes **you choose to send**, authenticated with your API Key.
-Importing reads your ideashell notes (`recent_notes`, `note_detail`) and to-dos (`todo_list`) and writes them into the vault; it uploads nothing. The only write to ideashell from an import is `todo_update` marking a to-do complete, and only when *Two-way completion* is on.
+Importing reads your ideashell notes (`recent_notes`, `note_detail`) and to-dos (`todo_list`) and writes them into the vault; it uploads nothing. With *Two-way sync* on, edits you make to imported tasks are sent back with `todo_update`. That is the only write to ideashell an import makes.
 Nothing else in your vault is read or transmitted. There is no telemetry.
 
 An ideashell account is required. The API Key grants the same permissions as your other MCP clients (Claude, Cursor, …); reset it in ideashell if it leaks.

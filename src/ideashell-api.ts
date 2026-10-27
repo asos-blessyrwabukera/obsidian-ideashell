@@ -46,6 +46,17 @@ export interface CreatedNote {
 	url?: string;
 }
 
+/** One `todo_update` item: the id plus at least one field to change. */
+export interface TodoUpdate {
+	todo_id: string;
+	content?: string;
+	/** YYYY-MM-DD */
+	date?: string;
+	/** HH:MM, 24-hour */
+	time?: string;
+	is_completed?: boolean;
+}
+
 export interface FolderInfo {
 	folder_id: string;
 	name: string;
@@ -110,11 +121,11 @@ export class IdeashellApi {
 		});
 	}
 
-	/** Mark to-dos complete. Ids are sent back exactly as `todo_list` returned them. */
-	async completeTodos(ids: string[], timezone?: string): Promise<void> {
-		for (let i = 0; i < ids.length; i += TODO_UPDATE_MAX) {
+	/** Change to-dos; only the fields given are changed. Ids go back exactly as `todo_list` returned them. */
+	async updateTodos(items: TodoUpdate[], timezone?: string): Promise<void> {
+		for (let i = 0; i < items.length; i += TODO_UPDATE_MAX) {
 			await this.client().callTool('todo_update', {
-				items: ids.slice(i, i + TODO_UPDATE_MAX).map((todo_id) => ({ todo_id, is_completed: true })),
+				items: items.slice(i, i + TODO_UPDATE_MAX),
 				...(timezone ? { timezone } : {}),
 			});
 		}

@@ -7,6 +7,9 @@ import { FM_MARK } from './convert';
 import { ImportService, summarize } from './import';
 import { TodoService, summarizeTodos } from './todos';
 
+/** Wait after the last edit to an imported task before syncing it to ideashell. */
+const TODO_EDIT_DELAY_MS = 5000;
+
 export default class IdeashellPlugin extends Plugin {
 	settings: IdeashellSettings = DEFAULT_SETTINGS;
 	api!: IdeashellApi;
@@ -170,7 +173,8 @@ export default class IdeashellPlugin extends Plugin {
 			}),
 		);
 
-		// Two-way completion: push imported tasks ticked in Obsidian, shortly after the edit settles.
+		// Two-way sync: after an imported task is edited, sync to-dos once the edit settles. The
+		// sync fetches ideashell first, so ideashell still wins when both sides changed.
 		this.registerEvent(
 			this.app.metadataCache.on('changed', (file) => {
 				if (!this.settings.todosEnabled || !this.settings.todosTwoWay) return;
@@ -180,8 +184,8 @@ export default class IdeashellPlugin extends Plugin {
 					file.path,
 					window.setTimeout(() => {
 						this.pendingTodoPush.delete(file.path);
-						void this.todos.pushCompletionsIn(file);
-					}, 3000),
+						void this.syncEditedTodos(file);
+					}, TODO_EDIT_DELAY_MS),
 				);
 			}),
 		);
@@ -247,6 +251,11 @@ export default class IdeashellPlugin extends Plugin {
 	private async runScheduled(): Promise<void> {
 		await this.runImport({ manual: false });
 		if (this.settings.todosEnabled && this.settings.todosAutoSync) await this.runTodoImport({ manual: false });
+	}
+
+	private async syncEditedTodos(file: TFile): Promise<void> {
+		if (this.todos.isRunning || !(await this.todos.hasLocalEdits(file))) return;
+		await this.runTodoImport({ manual: false });
 	}
 
 	async runTodoImport(opts: { manual: boolean }): Promise<void> {

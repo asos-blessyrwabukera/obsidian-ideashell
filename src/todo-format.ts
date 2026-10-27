@@ -31,38 +31,51 @@ export function snapshotOf(t: Todo): TodoSnapshot {
 	return { content: t.content, date: t.date, time: t.time, completed: t.completed };
 }
 
-export interface TodoPlan {
-	/** ideashell changed the text (or it was never synced): write it. */
-	content: boolean;
-	/** ideashell changed the date or time: write them. */
-	schedule: boolean;
-	/** New local completion state, or null to leave the vault as it is. */
-	done: boolean | null;
-	/** Mark the to-do complete in ideashell (two-way completion). */
-	push: boolean;
+const FIELDS = ['content', 'date', 'time', 'completed'] as const;
+type Field = (typeof FIELDS)[number];
+export type TodoFields = Partial<TodoSnapshot>;
+
+export interface TodoReconcile {
+	/** Values to write to the vault (ideashell changed them, or the task was never synced). */
+	write: TodoFields;
+	/** Values to send to ideashell with `todo_update` (changed only in the vault; two-way sync). */
+	push: TodoFields;
 }
 
 /**
- * Field-level merge. Only fields ideashell changed since the last sync are written, so edits made
- * in Obsidian survive. A task completed in Obsidian is never reopened from ideashell unless
- * two-way completion is on and ideashell itself reopened it after both sides agreed it was done.
+ * Field-level two-way merge against the values last synced (`prev`). For each field:
+ *  - changed in ideashell since the last sync → ideashell wins and the vault is updated;
+ *  - changed only in the vault → sent to ideashell when two-way sync is on, otherwise left as is.
+ * With no previous sync, ideashell wins, except that a task completed in the vault stays done
+ * (and is completed in ideashell with two-way sync). ideashell cannot clear a date or time, so
+ * one removed in the vault is not sent.
  */
-export function planTodo(remote: TodoSnapshot, prev: TodoSnapshot | undefined, localDone: boolean, twoWay: boolean): TodoPlan {
-	const plan: TodoPlan = {
-		content: !prev || prev.content !== remote.content,
-		schedule: !prev || prev.date !== remote.date || prev.time !== remote.time,
-		done: null,
-		push: false,
+export function reconcileTodo(remote: TodoSnapshot, prev: TodoSnapshot | undefined, local: TodoSnapshot, twoWay: boolean): TodoReconcile {
+	const write: TodoFields = {};
+	const push: TodoFields = {};
+	const set = (target: TodoFields, f: Field, v: TodoSnapshot[Field]) => {
+		(target as Record<Field, TodoSnapshot[Field]>)[f] = v;
 	};
-	const remoteChanged = !prev || prev.completed !== remote.completed;
-	if (remote.completed && !localDone) {
-		// completed in ideashell; if it was reopened here after that, keep it open
-		if (remoteChanged) plan.done = true;
-	} else if (!remote.completed && localDone && twoWay) {
-		if (prev?.completed) plan.done = false;
-		else plan.push = true;
+	for (const f of FIELDS) {
+		const r = remote[f];
+		const l = local[f];
+		if (l === r) continue;
+		if (!prev) {
+			if (f === 'completed' && l) {
+				if (twoWay) set(push, f, l);
+			} else set(write, f, r);
+			continue;
+		}
+		if (r !== prev[f]) {
+			set(write, f, r);
+			continue;
+		}
+		if (!twoWay) continue;
+		if ((f === 'date' || f === 'time') && !l) continue;
+		if (f === 'content' && !String(l).trim()) continue;
+		set(push, f, l);
 	}
-	return plan;
+	return { write, push };
 }
 
 /** Tasks plugin signifiers; inside to-do text they would be read as dates, priorities, etc. */
@@ -123,6 +136,26 @@ export function renderInlineTask(t: Todo, o: InlineOptions): string {
 }
 
 const INLINE_LINE = /^(\s*)(?:[-*+]|\d+[.)]) \[(.)\] .*\^ideashell-([A-Za-z0-9-]+)\s*$/;
+
+/**
+ * The to-do fields of an inline task line as the user left it: text without the tags, dates and
+ * markers the import adds (escapes undone), the date from the date field's emoji, and the state.
+ */
+export function readInlineTask(line: string, tags: string[], dateField: TodoDateField): { content: string; date: string | null; completed: boolean } | null {
+	const marker = parseInlineTask(line);
+	if (!marker) return null;
+	const emoji = dateField === 'scheduled' ? '⏳' : '📅';
+	const date = new RegExp(`${emoji}\\uFE0F?\\s*(\\d{4}-\\d{2}-\\d{2})`, 'u').exec(line)?.[1] ?? null;
+	let text = line
+		.replace(/^\s*(?:[-*+]|\d+[.)]) \[.\] /, '')
+		.replace(/\s*\^ideashell-[A-Za-z0-9-]+\s*$/, '')
+		.replace(/[📅⏳🛫✅❌➕]\uFE0F?\s*\d{4}-\d{2}-\d{2}/gu, ' ');
+	for (const tag of normalizeTags(tags)) {
+		text = text.replace(new RegExp(`(^|\\s)#${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|$)`, 'g'), '$1');
+	}
+	const content = plainTodoText(text.replace(/\\([[\]<#%])/g, '$1'));
+	return { content, date, completed: isClosedStatus(marker.status) };
+}
 
 /** The marker of an inline ideashell task line, or null for any other line. */
 export function parseInlineTask(line: string): { indent: string; status: string; id: string } | null {

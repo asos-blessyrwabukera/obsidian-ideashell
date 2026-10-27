@@ -231,8 +231,8 @@ export class SyncService {
 
 /**
  * A note imported from ideashell carries `ideashell_id` but never `ideashell_hash`, which only
- * sending a note from Obsidian writes. Imported to-dos carry `ideashell_todo_id`; only their
- * completion is ever sent back (two-way completion), never their content.
+ * sending a note from Obsidian writes. Imported to-dos carry `ideashell_todo_id`; they are
+ * synced back through `todo_update` by the to-do sync, never sent as notes.
  */
 export function isImported(fm: Record<string, unknown> | undefined): boolean {
 	return (Boolean(fm?.[FM_ID]) && fm?.[FM_HASH] === undefined) || Boolean(fm?.[FM_TODO_ID]);

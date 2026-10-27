@@ -1,18 +1,18 @@
 import { App, TFile, TFolder, moment, normalizePath, stringifyYaml } from 'obsidian';
-import { IdeashellApi, TODO_LIST_MAX } from './ideashell-api';
+import { IdeashellApi, TODO_LIST_MAX, TodoUpdate } from './ideashell-api';
 import { Todo, parseTodos } from './parse';
 import {
 	BLOCK_PREFIX,
 	FM_TODO_ID,
-	TodoPlan,
+	TodoFields,
 	TodoSnapshot,
 	escapeTodoText,
-	isClosedStatus,
 	isSafeTodoId,
 	normalizeTags,
 	parseInlineTask,
-	planTodo,
 	plainTodoText,
+	readInlineTask,
+	reconcileTodo,
 	renderInlineTask,
 	snapshotOf,
 	taskNotesDate,
@@ -26,6 +26,7 @@ import { DailyNoteLinker, insertUnderHeading } from './daily-notes';
 const ALL_DATES_FROM = '2000-01-01';
 /** File names longer than this are cut by `sanitizeFilename`; the full text then goes in the body. */
 const MAX_TITLE = 100;
+const EMPTY_TITLE = 'ideashell to-do';
 
 export interface TodoResult {
 	created: number;
@@ -33,16 +34,23 @@ export interface TodoResult {
 	unchanged: number;
 	/** Not written: completed and completed to-dos are off, deleted from the vault, or an unusable id. */
 	skipped: number;
-	/** Marked complete in ideashell (two-way completion). */
-	completedRemote: number;
+	/** To-dos updated in ideashell from vault edits (two-way sync). */
+	pushed: number;
 	failed: number;
 	lastError: string | null;
 	/** A `todo_list` call hit its item limit, so some to-dos may be missing. */
 	truncated: boolean;
 }
 
+function emptyResult(): TodoResult {
+	return { created: 0, updated: 0, unchanged: 0, skipped: 0, pushed: 0, failed: 0, lastError: null, truncated: false };
+}
+
 /** Where an imported to-do lives in the vault. */
-type Located = { kind: 'tasknotes'; file: TFile } | { kind: 'inline'; file: TFile };
+interface Located {
+	kind: 'tasknotes' | 'inline';
+	file: TFile;
+}
 
 /** A change to one inline file, applied in a single `vault.process`. */
 interface InlineEdit {
@@ -51,14 +59,14 @@ interface InlineEdit {
 }
 
 /**
- * ideashell to-dos → vault tasks. Each to-do becomes a TaskNotes file (`ideashell_todo_id` in
- * frontmatter) or an inline Tasks-format line (`^ideashell-<id>` block id). The last values
- * written are kept in plugin data, so a re-import only writes fields that changed in ideashell
- * and a task deleted from the vault is not brought back.
+ * ideashell to-dos ⇄ vault tasks. Each to-do becomes a TaskNotes file (`ideashell_todo_id` in
+ * frontmatter) or an inline Tasks-format line (`^ideashell-<id>` block id). The values last
+ * synced are kept in plugin data, so each run knows which side changed a field: ideashell's
+ * changes are written to the vault, and with two-way sync the vault's changes to the text, date,
+ * time and completion are sent to ideashell. When both changed a field, ideashell wins.
  */
 export class TodoService {
 	private running = false;
-	private pushing = false;
 
 	constructor(
 		private app: App,
@@ -85,21 +93,22 @@ export class TodoService {
 	private async doRun(onProgress?: (m: string) => void): Promise<TodoResult> {
 		const s = this.settings();
 		const state = s.todoState;
-		const result: TodoResult = { created: 0, updated: 0, unchanged: 0, skipped: 0, completedRemote: 0, failed: 0, lastError: null, truncated: false };
+		const result = emptyResult();
 		const tz = localTimezone();
 
 		onProgress?.('Listing to-dos…');
 		const open = await this.list(false, tz, result);
 		// Completed to-dos drop out of the open list, so fetch them when importing them or when a
-		// task already in the vault may have been completed in ideashell.
+		// task already in the vault is not open in ideashell (completed there, or completed and
+		// then reopened in the vault).
 		const openIds = new Set(open.map((t) => t.id));
-		const needCompleted = s.todosIncludeCompleted || Object.entries(state.synced).some(([id, p]) => !p.completed && !openIds.has(id));
+		const needCompleted = s.todosIncludeCompleted || Object.keys(state.synced).some((id) => !openIds.has(id));
 		const completed = needCompleted ? await this.list(true, tz, result) : [];
 		const todos = [...open, ...completed.filter((t) => !openIds.has(t.id))];
 
 		const located = this.locate();
 		const inlineEdits = new Map<string, InlineEdit>();
-		const pushes: string[] = [];
+		const pushes = new Map<string, TodoFields>();
 		const today = moment().format('YYYY-MM-DD');
 
 		let done = 0;
@@ -130,8 +139,7 @@ export class TodoService {
 						edit.inserts.todos.push(t);
 					}
 				} else if (hit.kind === 'tasknotes') {
-					const outcome = await this.updateTaskNote(hit.file, t, prev, today, pushes);
-					result[outcome]++;
+					result[await this.syncTaskNote(hit.file, t, prev, today, pushes)]++;
 				} else {
 					editFor(inlineEdits, hit.file.path).updates.set(t.id, t);
 				}
@@ -146,16 +154,15 @@ export class TodoService {
 			try {
 				await this.applyInline(path, edit, today, pushes, result);
 			} catch (e) {
-				const n = edit.updates.size + edit.inserts.todos.length;
-				result.failed += n;
+				result.failed += edit.updates.size + edit.inserts.todos.length;
 				result.lastError = `${path}: ${errorMessage(e)}`;
 				console.error('[ideashell] writing to-dos failed', path, e);
 			}
 		}
 
-		if (pushes.length > 0) {
-			onProgress?.('Marking to-dos complete in ideashell…');
-			result.completedRemote += await this.push(pushes, tz, result);
+		if (pushes.size > 0) {
+			onProgress?.('Sending changes to ideashell…');
+			await this.push(pushes, tz, result);
 		}
 
 		state.lastRunAt = new Date().toISOString();
@@ -197,7 +204,7 @@ export class TodoService {
 
 	private async createTaskNote(t: Todo, today: string): Promise<void> {
 		const s = this.settings();
-		const title = plainTodoText(t.content) || 'ideashell to-do';
+		const title = plainTodoText(t.content) || EMPTY_TITLE;
 		const folder = normalizePath(s.todosFolder.trim() || '/');
 		await this.ensureFolder(folder);
 		const name = sanitizeFilename(title);
@@ -222,35 +229,51 @@ export class TodoService {
 		await this.app.vault.create(path, `---\n${stringifyYaml(fm)}---\n${body}`);
 	}
 
-	private async updateTaskNote(
+	/** The to-do as the TaskNotes file has it now; fields the file cannot show are taken from `base`. */
+	private readTaskNote(file: TFile, base: TodoSnapshot, id: string): TodoSnapshot {
+		const s = this.settings();
+		const fm = this.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
+		// the file name is the title; an id suffix added to avoid a name clash is not part of it
+		const name = file.basename.replace(new RegExp(` ${id.slice(0, 8)}( \\d+)?$`), '');
+		const content = name === sanitizeFilename(plainTodoText(base.content) || EMPTY_TITLE) ? base.content : name;
+		const raw: unknown = fm[s.todosDateField];
+		const when = /^(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2}))?/.exec(typeof raw === 'string' ? raw : '');
+		return {
+			content,
+			date: when?.[1] ?? null,
+			time: s.todosIncludeTime ? (when?.[2] ?? null) : base.time,
+			completed: this.isTaskNoteDone(fm),
+		};
+	}
+
+	private async syncTaskNote(
 		file: TFile,
 		t: Todo,
 		prev: TodoSnapshot | undefined,
 		today: string,
-		pushes: string[],
+		pushes: Map<string, TodoFields>,
 	): Promise<'updated' | 'unchanged'> {
 		const s = this.settings();
-		const fm = this.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
-		const localDone = this.isTaskNoteDone(fm);
-		const plan = planTodo(snapshotOf(t), prev, localDone, s.todosTwoWay);
-		const snapshot = snapshotOf(t);
-		if (plan.push) {
-			pushes.push(t.id);
-			// recorded as open until ideashell confirms, so a failed push is retried next run
-		}
+		const remote = snapshotOf(t);
+		const local = this.readTaskNote(file, prev ?? remote, t.id);
+		const { write, push } = reconcileTodo(remote, prev, local, s.todosTwoWay);
+		if (Object.keys(push).length > 0) pushes.set(t.id, push);
+		// recorded as ideashell has it; pushed fields are recorded once ideashell accepts them
+		s.todoState.synced[t.id] = remote;
 
 		let changed = false;
-		if (plan.schedule || plan.done !== null) {
-			const when = taskNotesDate(t.date, t.time, s.todosIncludeTime);
+		const schedule = 'date' in write || 'time' in write;
+		if (schedule || write.completed !== undefined) {
+			const when = taskNotesDate(write.date !== undefined ? write.date : local.date, write.time !== undefined ? write.time : local.time, s.todosIncludeTime);
 			await this.app.fileManager.processFrontMatter(file, (f: Record<string, unknown>) => {
-				if (plan.schedule) {
+				if (schedule) {
 					if (when) f[s.todosDateField] = when;
 					else delete f[s.todosDateField];
 				}
-				if (plan.done === true) {
+				if (write.completed === true) {
 					f.status = s.todosDoneStatus;
 					f.completedDate = today;
-				} else if (plan.done === false) {
+				} else if (write.completed === false) {
 					f.status = s.todosOpenStatus;
 					delete f.completedDate;
 				}
@@ -258,8 +281,8 @@ export class TodoService {
 			});
 			changed = true;
 		}
-		if (plan.content) {
-			const name = sanitizeFilename(plainTodoText(t.content) || 'ideashell to-do');
+		if (write.content !== undefined) {
+			const name = sanitizeFilename(plainTodoText(write.content) || EMPTY_TITLE);
 			if (name !== file.basename) {
 				const folder = file.parent?.path ?? '/';
 				const target = this.freePath(folder === '/' ? `${name}.md` : `${folder}/${name}.md`, t.id);
@@ -267,7 +290,6 @@ export class TodoService {
 				changed = true;
 			}
 		}
-		this.settings().todoState.synced[t.id] = snapshot;
 		return changed ? 'updated' : 'unchanged';
 	}
 
@@ -301,28 +323,45 @@ export class TodoService {
 		return { path, heading };
 	}
 
-	private async applyInline(path: string, edit: InlineEdit, today: string, pushes: string[], result: TodoResult): Promise<void> {
+	/** The to-do as an inline line has it now; the time, which lines cannot show, comes from `base`. */
+	private readInline(line: string, base: TodoSnapshot): TodoSnapshot | null {
 		const s = this.settings();
-		const file = this.app.vault.getAbstractFileByPath(path);
-		if (!(file instanceof TFile)) throw new Error('file not found');
+		const read = readInlineTask(line, [s.todosTaskTag, s.todosTag], s.todosDateField);
+		if (!read) return null;
+		const rendered = plainTodoText(base.content) || '(empty to-do)';
+		return { content: read.content === rendered ? base.content : read.content, date: read.date, time: base.time, completed: read.completed };
+	}
+
+	private async applyInline(path: string, edit: InlineEdit, today: string, pushes: Map<string, TodoFields>, result: TodoResult): Promise<void> {
+		const s = this.settings();
 		const tags = [s.todosTaskTag, s.todosTag];
 		const synced = s.todoState.synced;
-		await this.app.vault.process(file, (text) => {
+		await this.app.vault.process(this.fileAt(path), (text) => {
 			const lines = text.split('\n');
 			const seen = new Set<string>();
 			for (let i = 0; i < lines.length; i++) {
-				const marker = parseInlineTask(lines[i] ?? '');
+				const line = lines[i] ?? '';
+				const marker = parseInlineTask(line);
 				const t = marker ? edit.updates.get(marker.id) : undefined;
 				if (!marker || !t || seen.has(t.id)) continue;
 				seen.add(t.id);
-				const plan = planTodo(snapshotOf(t), synced[t.id], isClosedStatus(marker.status), s.todosTwoWay);
-				if (plan.push) pushes.push(t.id);
-				synced[t.id] = snapshotOf(t);
-				if (!plan.content && !plan.schedule && plan.done === null) {
+				const remote = snapshotOf(t);
+				const prev = synced[t.id];
+				const local = this.readInline(line, prev ?? remote);
+				if (!local) continue;
+				const { write, push } = reconcileTodo(remote, prev, local, s.todosTwoWay);
+				if (Object.keys(push).length > 0) pushes.set(t.id, push);
+				synced[t.id] = remote;
+				if (Object.keys(write).length === 0) {
 					result.unchanged++;
 					continue;
 				}
-				lines[i] = marker.indent + this.rerenderInline(lines[i] ?? '', marker.status, t, plan, tags, today);
+				const merged: Todo = { ...t, ...local, ...write, id: t.id };
+				const doneDate = /✅\s*(\d{4}-\d{2}-\d{2})/u.exec(line)?.[1] ?? today;
+				let rendered = renderInlineTask(merged, { done: merged.completed, doneDate, tags, dateField: s.todosDateField });
+				// keep a custom closed state such as `-` (cancelled) when completion did not change
+				if (write.completed === undefined && merged.completed) rendered = rendered.replace(/^- \[x\]/, `- [${marker.status}]`);
+				lines[i] = marker.indent + rendered;
 				result.updated++;
 			}
 			// an id the cache placed here but the text no longer has (edited meanwhile): count, don't add
@@ -339,63 +378,62 @@ export class TodoService {
 		});
 	}
 
-	/** New text for an existing line: the local status (and ✅ date) are kept unless the plan changes them. */
-	private rerenderInline(line: string, status: string, t: Todo, plan: TodoPlan, tags: string[], today: string): string {
-		const done = plan.done ?? isClosedStatus(status);
-		const oldDoneDate = /✅\s*(\d{4}-\d{2}-\d{2})/u.exec(line)?.[1];
-		const rendered = renderInlineTask(t, { done, doneDate: oldDoneDate ?? today, tags, dateField: this.settings().todosDateField });
-		// keep custom closed states such as `-` (cancelled) when completion did not change
-		return plan.done === null && done ? rendered.replace(/^- \[x\]/, `- [${status}]`) : rendered;
-	}
-
-	// --- two-way completion ---
+	// --- two-way sync ---
 
 	/**
-	 * Called when a file changes: push completions of imported tasks ticked in Obsidian. Only ids
-	 * this plugin imported (and last saw open) are sent; nothing else is ever written to ideashell.
+	 * Whether `file` holds an imported to-do edited in the vault since the last sync. Used to run
+	 * a sync soon after a task is edited; the sync itself fetches ideashell first, so a change
+	 * made there in the meantime still wins.
 	 */
-	async pushCompletionsIn(file: TFile): Promise<void> {
-		const s = this.settings();
-		if (!s.todosTwoWay || this.running || this.pushing) return;
+	async hasLocalEdits(file: TFile): Promise<boolean> {
+		const synced = this.settings().todoState.synced;
 		const cache = this.app.metadataCache.getFileCache(file);
-		const ids: string[] = [];
 		const fmId: unknown = cache?.frontmatter?.[FM_TODO_ID];
-		if (typeof fmId === 'string' && this.isTaskNoteDone(cache?.frontmatter ?? {})) ids.push(fmId.trim());
-		for (const item of cache?.listItems ?? []) {
-			if (item.id?.startsWith(BLOCK_PREFIX) && item.task !== undefined && isClosedStatus(item.task)) {
-				ids.push(item.id.slice(BLOCK_PREFIX.length));
-			}
+		if (typeof fmId === 'string') {
+			const prev = synced[fmId.trim()];
+			if (prev && differs(this.readTaskNote(file, prev, fmId.trim()), prev)) return true;
 		}
-		const todo = ids.filter((id) => s.todoState.synced[id] && !s.todoState.synced[id]?.completed);
-		if (todo.length === 0) return;
-		this.pushing = true;
-		try {
-			const result: TodoResult = { created: 0, updated: 0, unchanged: 0, skipped: 0, completedRemote: 0, failed: 0, lastError: null, truncated: false };
-			await this.push(todo, localTimezone(), result);
-			await this.save();
-			if (result.lastError) console.error('[ideashell] completing to-dos in ideashell failed', result.lastError);
-		} finally {
-			this.pushing = false;
+		if (!cache?.listItems?.some((li) => li.id?.startsWith(BLOCK_PREFIX))) return false;
+		for (const line of (await this.app.vault.cachedRead(file)).split('\n')) {
+			const marker = parseInlineTask(line);
+			const prev = marker ? synced[marker.id] : undefined;
+			const local = prev ? this.readInline(line, prev) : null;
+			if (prev && local && differs(local, prev)) return true;
 		}
+		return false;
 	}
 
-	private async push(ids: string[], timezone: string, result: TodoResult): Promise<number> {
-		const unique = [...new Set(ids)];
+	private async push(pushes: Map<string, TodoFields>, timezone: string, result: TodoResult): Promise<void> {
+		const items: TodoUpdate[] = [...pushes].map(([todo_id, f]) => ({
+			todo_id,
+			...(f.content !== undefined ? { content: f.content } : {}),
+			...(f.date ? { date: f.date } : {}),
+			...(f.time ? { time: f.time } : {}),
+			...(f.completed !== undefined ? { is_completed: f.completed } : {}),
+		}));
 		try {
-			await this.api.completeTodos(unique, timezone);
+			await this.api.updateTodos(items, timezone);
 		} catch (e) {
-			result.failed += unique.length;
+			// not recorded as synced, so the next run sends them again
+			result.failed += items.length;
 			result.lastError = `todo_update: ${errorMessage(e)}`;
-			return 0;
+			return;
 		}
-		for (const id of unique) {
-			const snap = this.settings().todoState.synced[id];
-			if (snap) snap.completed = true;
+		const synced = this.settings().todoState.synced;
+		for (const [id, f] of pushes) {
+			const snap = synced[id];
+			if (snap) synced[id] = { ...snap, ...f };
 		}
-		return unique.length;
+		result.pushed += items.length;
 	}
 
 	// --- helpers ---
+
+	private fileAt(path: string): TFile {
+		const file = this.app.vault.getAbstractFileByPath(path);
+		if (!(file instanceof TFile)) throw new Error(`${path}: file not found`);
+		return file;
+	}
 
 	private freePath(path: string, id: string): string {
 		if (!this.app.vault.getAbstractFileByPath(path)) return path;
@@ -419,6 +457,10 @@ export class TodoService {
 	}
 }
 
+function differs(a: TodoSnapshot, b: TodoSnapshot): boolean {
+	return a.content !== b.content || a.date !== b.date || a.time !== b.time || a.completed !== b.completed;
+}
+
 function editFor(edits: Map<string, InlineEdit>, path: string): InlineEdit {
 	let e = edits.get(path);
 	if (!e) {
@@ -440,7 +482,7 @@ function localTimezone(): string {
 export function summarizeTodos(r: TodoResult): string {
 	const parts = [`${r.created} created`, `${r.updated} updated`, `${r.unchanged} unchanged`];
 	if (r.skipped > 0) parts.push(`${r.skipped} skipped`);
-	if (r.completedRemote > 0) parts.push(`${r.completedRemote} completed in ideashell`);
+	if (r.pushed > 0) parts.push(`${r.pushed} updated in ideashell`);
 	if (r.failed > 0) parts.push(`${r.failed} failed`);
 	if (r.truncated) parts.push(`ideashell returned its ${TODO_LIST_MAX}-item maximum, so some to-dos may be missing`);
 	return parts.join(', ');

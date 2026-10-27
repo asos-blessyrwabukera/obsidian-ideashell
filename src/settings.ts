@@ -116,7 +116,7 @@ export interface IdeashellSettings {
 	todosIncludeTime: boolean;
 	todosOpenStatus: string;
 	todosDoneStatus: string;
-	/** Mark to-dos complete in ideashell when they are completed in Obsidian. */
+	/** Send vault edits to imported to-dos (text, date, time, completion) to ideashell; ideashell wins conflicts. */
 	todosTwoWay: boolean;
 	todoState: TodoState;
 }
@@ -678,9 +678,9 @@ export class IdeashellSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName('Two-way completion')
+			.setName('Two-way sync')
 			.setDesc(
-				'When you complete an imported task in Obsidian or a task app that edits the vault, mark it complete in ideashell too. Nothing else is sent back. With this off, tasks you complete in Obsidian stay done, but ideashell is not changed.',
+				'Send changes you make to imported tasks (text, date, time, completed or reopened), in Obsidian or a task app that edits the vault, back to ideashell. When a task changed on both sides, ideashell wins. With this off, your changes stay in the vault and ideashell is not changed.',
 			)
 			.addToggle((t) =>
 				t.setValue(s.todosTwoWay).onChange(async (v) => {
