@@ -7,6 +7,7 @@ import type { IdeashellSettings, ImportTimeRange } from './settings';
 import { errorMessage } from './settings';
 import { DailyEntry, DailyNoteLinker } from './daily-notes';
 import { isImported } from './sync';
+import { FM_TODO_ID } from './todo-format';
 
 /** Notes per `recent_notes` page. */
 const PAGE_SIZE = 20;
@@ -265,7 +266,8 @@ export class ImportService {
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			if (file.path === templatePath) continue;
 			const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
-			if (!isImported(fm)) continue;
+			// to-dos are tasks, not notes; they are not linked from daily notes
+			if (!isImported(fm) || fm?.[FM_TODO_ID]) continue;
 			const raw: unknown = fm?.created ?? fm?.date;
 			const created = typeof raw === 'string' ? parseCreated(raw) : null;
 			if (!created?.isValid()) {

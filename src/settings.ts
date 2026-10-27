@@ -1,5 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type IdeashellPlugin from './main';
+import type { TodoDateField, TodoSnapshot } from './todo-format';
 
 export type Region = 'cn' | 'global' | 'custom';
 
@@ -32,6 +33,17 @@ export interface ImportState {
 	/** Human-readable summary of the last run. */
 	lastResult: string;
 }
+
+/** Bookkeeping for to-do imports, persisted with the settings. */
+export interface TodoState {
+	/** Values last written to the vault per todo_id; field-level merges and "deleted stays deleted" rely on it. */
+	synced: Record<string, TodoSnapshot>;
+	lastRunAt: string | null;
+	lastResult: string;
+}
+
+export type TodoFormat = 'tasknotes' | 'inline';
+export type TodoTarget = 'file' | 'daily';
 
 export interface IdeashellSettings {
 	region: Region;
@@ -77,6 +89,36 @@ export interface IdeashellSettings {
 	dailyNotesLine: string;
 	/** Create the daily note when it does not exist yet. */
 	dailyNotesCreate: boolean;
+
+	// --- to-dos (ideashell → Obsidian tasks) ---
+	/** Show the to-do import command and settings. */
+	todosEnabled: boolean;
+	/** Also import to-dos on the scheduled import. */
+	todosAutoSync: boolean;
+	/** One TaskNotes file per to-do, or one Tasks-format line per to-do. */
+	todosFormat: TodoFormat;
+	/** Folder for TaskNotes files. */
+	todosFolder: string;
+	/** Inline lines: a single file, or the daily note of the to-do's date. */
+	todosTarget: TodoTarget;
+	/** Inline lines: the single file, also used for undated to-dos in daily mode. */
+	todosFile: string;
+	/** Inline lines go under this heading (added when missing); empty = end of the note. */
+	todosHeading: string;
+	todosIncludeCompleted: boolean;
+	/** Tag every task needs: the TaskNotes task tag or the Tasks global filter. Empty = none. */
+	todosTaskTag: string;
+	/** Extra tag on every imported to-do. Empty = none. */
+	todosTag: string;
+	/** Task field the to-do's date goes in. */
+	todosDateField: TodoDateField;
+	/** TaskNotes files: add the to-do's time to the date. */
+	todosIncludeTime: boolean;
+	todosOpenStatus: string;
+	todosDoneStatus: string;
+	/** Mark to-dos complete in ideashell when they are completed in Obsidian. */
+	todosTwoWay: boolean;
+	todoState: TodoState;
 }
 
 export const DEFAULT_SETTINGS: IdeashellSettings = {
@@ -104,6 +146,22 @@ export const DEFAULT_SETTINGS: IdeashellSettings = {
 	dailyNotesHeading: '## ideashell',
 	dailyNotesLine: '- {{time}} {{link}}',
 	dailyNotesCreate: true,
+	todosEnabled: false,
+	todosAutoSync: false,
+	todosFormat: 'tasknotes',
+	todosFolder: 'ideashell/Todos',
+	todosTarget: 'file',
+	todosFile: 'ideashell/Todos.md',
+	todosHeading: '## ideashell',
+	todosIncludeCompleted: false,
+	todosTaskTag: 'task',
+	todosTag: 'ideashell',
+	todosDateField: 'due',
+	todosIncludeTime: true,
+	todosOpenStatus: 'open',
+	todosDoneStatus: 'done',
+	todosTwoWay: false,
+	todoState: { synced: {}, lastRunAt: null, lastResult: '' },
 };
 
 export function resolveEndpoint(s: IdeashellSettings): string {
@@ -117,6 +175,11 @@ export class IdeashellSettingTab extends PluginSettingTab {
 	}
 
 	display(): void {
+		this.render();
+	}
+
+	/** Redraw the tab; `display` itself is deprecated for direct calls. */
+	private render(): void {
 		const { containerEl } = this;
 		containerEl.empty();
 		const s = this.plugin.settings;
@@ -133,7 +196,7 @@ export class IdeashellSettingTab extends PluginSettingTab {
 					.onChange(async (v) => {
 						s.region = v as Region;
 						await this.plugin.saveSettings();
-						this.display();
+						this.render();
 					}),
 			);
 
@@ -277,7 +340,7 @@ export class IdeashellSettingTab extends PluginSettingTab {
 						b.setDisabled(true);
 						await this.plugin.runImport({ manual: true });
 						b.setDisabled(false);
-						this.display();
+						this.render();
 					}),
 			)
 			.addButton((b) =>
@@ -288,7 +351,7 @@ export class IdeashellSettingTab extends PluginSettingTab {
 						b.setDisabled(true);
 						await this.plugin.runImport({ manual: true, full: true });
 						b.setDisabled(false);
-						this.display();
+						this.render();
 					}),
 			);
 
@@ -399,6 +462,7 @@ export class IdeashellSettingTab extends PluginSettingTab {
 			);
 
 		this.displayDailyNotes(containerEl);
+		this.displayTodos(containerEl);
 	}
 
 	private displayDailyNotes(containerEl: HTMLElement): void {
@@ -451,7 +515,7 @@ export class IdeashellSettingTab extends PluginSettingTab {
 			.setDesc('Links are added at the end of this section; the heading is added if missing. Leave empty to append to the end of the note.')
 			.addText((t) =>
 				t
-					.setPlaceholder('## Section')
+					.setPlaceholder('## ideashell')
 					.setValue(s.dailyNotesHeading)
 					.onChange(async (v) => {
 						s.dailyNotesHeading = v.trim();
@@ -480,6 +544,147 @@ export class IdeashellSettingTab extends PluginSettingTab {
 			.addToggle((t) =>
 				t.setValue(s.dailyNotesCreate).onChange(async (v) => {
 					s.dailyNotesCreate = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+	}
+
+	private displayTodos(containerEl: HTMLElement): void {
+		const s = this.plugin.settings;
+		const text = (name: string, desc: string, placeholder: string, get: () => string, set: (v: string) => void) =>
+			new Setting(containerEl)
+				.setName(name)
+				.setDesc(desc)
+				.addText((t) =>
+					t
+						.setPlaceholder(placeholder)
+						.setValue(get())
+						.onChange(async (v) => {
+							set(v.trim());
+							await this.plugin.saveSettings();
+						}),
+				);
+
+		new Setting(containerEl)
+			.setName('Import to-dos')
+			.setDesc('Bring ideashell to-dos into the vault as tasks that task plugins can read.')
+			.setHeading();
+
+		new Setting(containerEl)
+			.setName('Enable to-do import')
+			.setDesc('Adds a command that imports to-dos from ideashell.')
+			.addToggle((t) =>
+				t.setValue(s.todosEnabled).onChange(async (v) => {
+					s.todosEnabled = v;
+					await this.plugin.saveSettings();
+					this.render();
+				}),
+			);
+		if (!s.todosEnabled) return;
+
+		new Setting(containerEl)
+			.setName('Import to-dos now')
+			.setDesc(s.todoState.lastRunAt ? `Last run: ${new Date(s.todoState.lastRunAt).toLocaleString()}, ${s.todoState.lastResult}.` : 'Not imported yet.')
+			.addButton((b) =>
+				b
+					.setButtonText('Import to-dos')
+					.setCta()
+					.onClick(async () => {
+						b.setDisabled(true);
+						await this.plugin.runTodoImport({ manual: true });
+						b.setDisabled(false);
+						this.render();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Include in scheduled import')
+			.setDesc('Also import to-dos whenever notes are imported automatically (see sync frequency).')
+			.addToggle((t) =>
+				t.setValue(s.todosAutoSync).onChange(async (v) => {
+					s.todosAutoSync = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName('Task format')
+			.setDesc('One task note per to-do, for the task notes plugin and task apps that read it, or one task line per to-do in the emoji format of the tasks plugin.')
+			.addDropdown((d) =>
+				d
+					.addOptions({ tasknotes: 'TaskNotes file per to-do', inline: 'Task line (Tasks emoji format)' })
+					.setValue(s.todosFormat)
+					.onChange(async (v) => {
+						s.todosFormat = v as TodoFormat;
+						await this.plugin.saveSettings();
+						this.render();
+					}),
+			);
+
+		if (s.todosFormat === 'tasknotes') {
+			text('Task folder', 'Folder for new task files. Files you move elsewhere are still updated.', 'ideashell/Todos', () => s.todosFolder, (v) => (s.todosFolder = v));
+			text('Open status', 'TaskNotes status for open to-dos.', 'open', () => s.todosOpenStatus, (v) => (s.todosOpenStatus = v || 'open'));
+			text('Done status', 'TaskNotes status for completed to-dos.', 'done', () => s.todosDoneStatus, (v) => (s.todosDoneStatus = v || 'done'));
+			new Setting(containerEl)
+				.setName('Include time')
+				.setDesc('Write the to-do time after the date, as the vault does for scheduled times.')
+				.addToggle((t) =>
+					t.setValue(s.todosIncludeTime).onChange(async (v) => {
+						s.todosIncludeTime = v;
+						await this.plugin.saveSettings();
+					}),
+				);
+		} else {
+			new Setting(containerEl)
+				.setName('Target')
+				.setDesc('One file for all to-dos, or the daily note of each to-do\'s date. Undated to-dos always go in the file.')
+				.addDropdown((d) =>
+					d
+						.addOptions({ file: 'Single file', daily: 'Daily note of the to-do date' })
+						.setValue(s.todosTarget)
+						.onChange(async (v) => {
+							s.todosTarget = v as TodoTarget;
+							await this.plugin.saveSettings();
+						}),
+				);
+			text('To-dos file', 'File for to-do lines.', 'ideashell/Todos.md', () => s.todosFile, (v) => (s.todosFile = v));
+			text('Heading', 'New lines are added under this heading, which is created when missing. Leave empty to append to the end.', '## ideashell', () => s.todosHeading, (v) => (s.todosHeading = v));
+		}
+
+		new Setting(containerEl)
+			.setName('Date field')
+			.setDesc('Task field for the to-do date.')
+			.addDropdown((d) =>
+				d
+					.addOptions({ due: 'Due', scheduled: 'Scheduled' })
+					.setValue(s.todosDateField)
+					.onChange(async (v) => {
+						s.todosDateField = v as TodoDateField;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		text('Task tag', 'Tag every task needs: the TaskNotes task tag, or the Tasks plugin global filter. Leave empty for none.', 'task', () => s.todosTaskTag, (v) => (s.todosTaskTag = v.replace(/^#/, '')));
+		text('Extra tag', 'Added to every imported to-do. Leave empty for none.', 'ideashell', () => s.todosTag, (v) => (s.todosTag = v.replace(/^#/, '')));
+
+		new Setting(containerEl)
+			.setName('Import completed to-dos')
+			.setDesc('Also add to-dos that are already completed in ideashell. Tasks imported earlier are marked done either way.')
+			.addToggle((t) =>
+				t.setValue(s.todosIncludeCompleted).onChange(async (v) => {
+					s.todosIncludeCompleted = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName('Two-way completion')
+			.setDesc(
+				'When you complete an imported task in Obsidian, mark it complete in ideashell too. Nothing else is sent back. With this off, tasks you complete in Obsidian stay done, but ideashell is not changed.',
+			)
+			.addToggle((t) =>
+				t.setValue(s.todosTwoWay).onChange(async (v) => {
+					s.todosTwoWay = v;
 					await this.plugin.saveSettings();
 				}),
 			);

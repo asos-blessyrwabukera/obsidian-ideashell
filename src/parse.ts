@@ -238,3 +238,106 @@ function parseJsonDetail(text: string, fallback: ListedNote): NoteDetail | null 
 		transcribing: isTranscribing([body, transcriptText].join('\n')),
 	};
 }
+
+// --- to-dos ---
+
+/**
+ * One ideashell to-do. `todo_list` returns a JSON array of
+ * `{ id, content, date: "YYYY-MM-DD" | null, time: "HH:MM" | null, is_completed }`;
+ * the text form below is accepted too in case the server formats it for language models:
+ *
+ *     - [ ] Call the bank (2026-10-28 09:00)
+ *       todo_id: 82831ae33f284ecb932ac1663790dbb7
+ */
+export interface Todo {
+	/** Opaque; passed back to `todo_update` exactly as received. */
+	id: string;
+	content: string;
+	date: string | null;
+	time: string | null;
+	completed: boolean;
+}
+
+const TODO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const TODO_TIME = /^\d{1,2}:\d{2}$/;
+
+export function parseTodos(text: string): Todo[] {
+	const data = tryJson(text);
+	if (data !== undefined) {
+		const rec = (data ?? {}) as Record<string, unknown>;
+		const arr: unknown = Array.isArray(data) ? data : rec.todos ?? rec.items ?? rec.data;
+		if (Array.isArray(arr)) return dedupeTodos(arr.map((t) => todoFromJson(t)));
+	}
+	return dedupeTodos(parseTodoText(text));
+}
+
+function todoFromJson(t: unknown): Todo {
+	const o = (t ?? {}) as Record<string, unknown>;
+	const completed = o.is_completed ?? o.completed ?? o.done ?? o.status;
+	return {
+		id: str(o.todo_id ?? o.id).trim(),
+		content: str(o.content ?? o.text ?? o.title),
+		date: todoDate(str(o.date)),
+		time: todoTime(str(o.time)),
+		completed: completed === true || completed === 'true' || completed === 1 || completed === 'completed' || completed === 'done',
+	};
+}
+
+function parseTodoText(text: string): Todo[] {
+	const out: Todo[] = [];
+	let current: Todo | null = null;
+	for (const line of text.split(/\r?\n/)) {
+		const item = /^\s*(?:[-*+]|\d+[.)])\s+(?:\[([ xX])\]\s*)?(.*?)\s*$/.exec(line);
+		const meta = /^\s*(?:[-*]\s*)?([a-z_]+):\s*(.*?)\s*$/i.exec(line);
+		const key = (meta?.[1] ?? '').toLowerCase();
+		if (meta && ['todo_id', 'id', 'date', 'time', 'is_completed', 'completed', 'content'].includes(key)) {
+			const value = (meta[2] ?? '').replace(/[`"'[\]]/g, '').trim();
+			if (key === 'todo_id' || key === 'id') {
+				if (!current || current.id) {
+					current = { id: '', content: '', date: null, time: null, completed: false };
+					out.push(current);
+				}
+				current.id = value;
+			} else if (current) {
+				if (key === 'date') current.date = todoDate(value);
+				else if (key === 'time') current.time = todoTime(value);
+				else if (key === 'content') current.content = value;
+				else current.completed = value.toLowerCase() === 'true';
+			}
+			continue;
+		}
+		if (item) {
+			let body = item[2] ?? '';
+			// trailing "(YYYY-MM-DD HH:MM)" or "[todo_id: …]" on the same line
+			const id = /\[?(?:todo_)?id:\s*([^\]\s]+)\]?/i.exec(body);
+			if (id) body = body.replace(id[0], '').trim();
+			const when = /\(?(\d{4}-\d{2}-\d{2})(?:[ T](\d{1,2}:\d{2}))?\)?\s*$/.exec(body);
+			if (when) body = body.slice(0, when.index).trim();
+			current = {
+				id: (id?.[1] ?? '').trim(),
+				content: body,
+				date: todoDate(when?.[1] ?? ''),
+				time: todoTime(when?.[2] ?? ''),
+				completed: item[1] === 'x' || item[1] === 'X',
+			};
+			out.push(current);
+		}
+	}
+	return out;
+}
+
+function todoDate(v: string): string | null {
+	const d = v.trim().slice(0, 10);
+	return TODO_DATE.test(d) ? d : null;
+}
+
+function todoTime(v: string): string | null {
+	const t = v.trim().slice(0, 5);
+	if (!TODO_TIME.test(t)) return null;
+	return t.length === 4 ? `0${t}` : t;
+}
+
+function dedupeTodos(todos: Todo[]): Todo[] {
+	const seen = new Set<string>();
+	return todos.filter((t) => t.id && !seen.has(t.id) && (seen.add(t.id), true));
+}

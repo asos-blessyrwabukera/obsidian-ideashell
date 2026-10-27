@@ -6,6 +6,10 @@ export const SUMMARY_MAX = 500;
 export const TAG_MAX = 32;
 export const FOLDER_NAME_MAX = 50;
 export const MOVE_NOTES_MAX = 50;
+/** `todo_list` limit maximum; the tool has no paging. */
+export const TODO_LIST_MAX = 200;
+/** Items per `todo_update` call (the tool sets no limit; keep requests small). */
+export const TODO_UPDATE_MAX = 50;
 
 export interface NoteImage {
 	/** base64 bytes */
@@ -90,6 +94,30 @@ export class IdeashellApi {
 	/** Full note: body plus memos (voice transcripts), audios and links. Raw text for `parseNoteDetail`. */
 	async noteDetail(noteId: string): Promise<string> {
 		return this.client().callTool('note_detail', { note_id: noteId, scope: 'full' });
+	}
+
+	/**
+	 * One call to `todo_list` (at most TODO_LIST_MAX items, no paging). Without `dateFrom` the
+	 * server returns roughly the last 30 days plus undated to-dos; with it, dated to-dos only.
+	 * Raw text for `parseTodos`.
+	 */
+	async listTodos(args: { completed: boolean; dateFrom?: string; timezone?: string }): Promise<string> {
+		return this.client().callTool('todo_list', {
+			limit: TODO_LIST_MAX,
+			...(args.completed ? { is_completed: true } : {}),
+			...(args.dateFrom ? { date_from: args.dateFrom } : {}),
+			...(args.timezone ? { timezone: args.timezone } : {}),
+		});
+	}
+
+	/** Mark to-dos complete. Ids are sent back exactly as `todo_list` returned them. */
+	async completeTodos(ids: string[], timezone?: string): Promise<void> {
+		for (let i = 0; i < ids.length; i += TODO_UPDATE_MAX) {
+			await this.client().callTool('todo_update', {
+				items: ids.slice(i, i + TODO_UPDATE_MAX).map((todo_id) => ({ todo_id, is_completed: true })),
+				...(timezone ? { timezone } : {}),
+			});
+		}
 	}
 
 	async listFolders(): Promise<FolderInfo[]> {

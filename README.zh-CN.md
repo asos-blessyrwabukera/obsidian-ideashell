@@ -39,6 +39,41 @@
 
 命令：「Import new notes」（只列出上次导入之后新建的笔记）与「Import all notes (full re-scan)」（重新扫描整个时间范围）。模板变量与全部设置项见[英文说明](README.md#import-notes-from-ideashell)。
 
+### 导入待办（ideashell 待办 → Obsidian 任务）
+
+- 每条闪念贝壳待办变成一条任务：默认是一个 [TaskNotes](https://github.com/callumalpass/tasknotes) 任务文件（TaskForge 也能读取），也可以选择 [Tasks](https://publish.obsidian.md/tasks/) 插件的 emoji 格式任务行，写进一个固定文件，或写进待办日期当天的日记。
+- 在设置里打开「Enable to-do import」，然后在命令面板运行「Import to-dos」，或在设置里点「Import to-dos」。打开「Include in scheduled import」后，定时导入时也会导入待办（默认关闭）。
+- 去重：每条任务都带着待办 id（任务文件的 frontmatter 里是 `ideashell_todo_id`，任务行末尾是块 id `^ideashell-<id>`）。再次导入只会原地更新，不会产生重复；没有这个标记的任务一律不动。
+- 保留你的修改：只写入闪念贝壳里自上次导入以来发生变化的字段。你在 Obsidian 里完成的任务不会被改回未完成；你删掉的任务不会再被导入。
+- 在闪念贝壳里完成的待办，会在 Obsidian 里标为完成，完成日期记为导入当天（闪念贝壳不提供完成时间）。
+- 双向完成（「Two-way completion」，默认关闭）：在 Obsidian 里完成一条导入的任务，闪念贝壳里的待办也会被标为完成。除此之外不会向闪念贝壳写回任何内容。
+- 待办内容按纯文本处理：去掉换行、开头的 `- [ ]` 和 Tasks 的 emoji 标记，并转义 `[[`、`<`、`#标签` 和 `%%`，避免变成链接、HTML、标签或注释。
+
+示例（任务行格式）：
+
+```markdown
+- [ ] Validate swap opportunity numbers with Emma after the MBR #task #ideashell 📅 2026-10-28 ^ideashell-ba277130-68cc-4feb-975f-b4584f770217
+```
+
+**待办设置项**
+
+| 设置 | 默认 | 说明 |
+|---|---|---|
+| Enable to-do import | 关 | 显示「Import to-dos」命令和下面的设置。 |
+| Include in scheduled import | 关 | 定时导入时也导入待办。 |
+| Task format | 每条待办一个 TaskNotes 文件 | 或选 Tasks emoji 格式的任务行。 |
+| Task folder | `ideashell/Todos` | 任务文件：新任务所在文件夹。移走的文件仍会被更新。 |
+| Open status / Done status | `open` / `done` | 任务文件：未完成、已完成对应的 status 值。 |
+| Include time | 开 | 任务文件：把待办时间写在日期后面（`2026-10-28T09:00:00`）。任务行不带时间（Tasks 格式没有时间）。 |
+| Target | 固定文件 | 任务行：写进一个文件，或写进待办日期当天的日记（文件夹和格式取「日记」设置）。没有日期的待办写进文件。 |
+| To-dos file | `ideashell/Todos.md` | 任务行：固定文件路径。 |
+| Heading | `## ideashell` | 任务行：新行加在这个标题下，没有会自动添加。 |
+| Date field | Due | 待办日期写成截止日期（`📅`）还是计划日期（`⏳`）。 |
+| Task tag | `task` | 每条任务都需要的标签：TaskNotes 的任务标签，或 Tasks 插件的 global filter。留空则不加。 |
+| Extra tag | `ideashell` | 每条导入的待办额外加的标签。留空则不加。 |
+| Import completed to-dos | 关 | 同时导入已完成的待办。之前导入过的任务无论如何都会同步完成状态。 |
+| Two-way completion | 关 | 在 Obsidian 里完成任务时，也在闪念贝壳里标为完成。 |
+
 ## 安装与设置
 
 1. 安装插件：第三方插件 → 搜索 **ideashell**；或用 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 添加本仓库地址。
@@ -103,6 +138,7 @@ ideashell_images: [ideashell-test/img/red.png]      # 已经挂上的图片（�
 本插件**只**向你在设置里选择的闪念贝壳 MCP 地址发起网络请求
 （国内 `https://api.ideashell.cn/ideashell/mcp`，海外 `https://api.ideashell.com/ideashell/mcp`，或自定义地址）。
 发送的是**你主动选择同步的那些笔记**的标题、正文、标签、文件夹名和内嵌图片，用你的 API Key 鉴权。
+导入会读取你的闪念贝壳笔记（`recent_notes`、`note_detail`）和待办（`todo_list`）并写入 vault。导入唯一会写回闪念贝壳的操作，是在打开「Two-way completion」时用 `todo_update` 把待办标为完成。
 vault 里的其它内容不会被读取或上传，没有任何遥测。
 
 需要闪念贝壳账号。API Key 的权限与你其它 MCP 客户端（Claude、Cursor 等）相同；如果泄露，去闪念贝壳里重置。
@@ -114,6 +150,9 @@ vault 里的其它内容不会被读取或上传，没有任何遥测。
 - 在 Obsidian 里给文件夹改名，闪念贝壳会新建一个新名字的文件夹并把笔记挪过去，旧的（已空）文件夹保留，需要手动删。
 - 标题超过 30 字会被截断（闪念贝壳限制）。
 - 在 Obsidian 里删除笔记不会删除闪念贝壳里的笔记。
+- `todo_list` 每次最多返回 200 条待办，且不支持分页。导入时未完成待办调用两次（最近及无日期的、所有有日期的），需要时已完成待办再调用两次；如果某次达到上限，导入结果里会提示。
+- 待办在闪念贝壳里改了日期，已导入的任务不会搬家；任务行会留在最初写入的那篇日记里。
+- 不支持重复待办：闪念贝壳的待办工具没有提供重复规则。
 - 批量同步是串行的，并且会自动控制在闪念贝壳的频率限制之内（遇到 429 自动等待重试）；首次同步大量笔记需要一些时间。
 
 ## 开发
