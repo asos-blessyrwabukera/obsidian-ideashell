@@ -117,6 +117,13 @@ export class DailyNoteLinker {
 		return format.replace(/\{\{(link|title|time)\}\}/g, (_m, key: string) => values[key] ?? '');
 	}
 
+	/** The daily note at `path`, created (from the core template, if set) when missing. */
+	async ensureDailyNote(path: string, date: moment.Moment): Promise<TFile> {
+		const existing = this.app.vault.getAbstractFileByPath(path);
+		if (existing instanceof TFile) return existing;
+		return this.createDailyNote(path, date, this.config());
+	}
+
 	private async createDailyNote(path: string, date: moment.Moment, cfg: DailyNoteConfig): Promise<TFile> {
 		const slash = path.lastIndexOf('/');
 		if (slash > 0) await this.ensureFolder(path.slice(0, slash));

@@ -5,6 +5,10 @@ import { SyncService } from './sync';
 import { DEFAULT_SETTINGS, IMPORT_FREQUENCY_MS, IdeashellSettingTab, IdeashellSettings, errorMessage, resolveEndpoint } from './settings';
 import { FM_MARK } from './convert';
 import { ImportService, summarize } from './import';
+import { TodoService, summarizeTodos } from './todos';
+
+/** Wait after the last edit to an imported task before syncing it to ideashell. */
+const TODO_EDIT_DELAY_MS = 5000;
 
 export default class IdeashellPlugin extends Plugin {
 	settings: IdeashellSettings = DEFAULT_SETTINGS;
@@ -14,6 +18,8 @@ export default class IdeashellPlugin extends Plugin {
 	private statusEl: HTMLElement | null = null;
 	private pendingAuto = new Map<string, number>();
 	private importer!: ImportService;
+	private todos!: TodoService;
+	private pendingTodoPush = new Map<string, number>();
 	private importIntervalId: number | null = null;
 	private importRibbonEl: HTMLElement | null = null;
 	/** Automatic imports report a failure once, not on every run, until one succeeds again. */
@@ -24,6 +30,7 @@ export default class IdeashellPlugin extends Plugin {
 		this.api = new IdeashellApi(() => this.getClient());
 		this.sync = new SyncService(this.app, this.api, () => this.settings);
 		this.importer = new ImportService(this.app, this.api, () => this.settings, () => this.saveSettings());
+		this.todos = new TodoService(this.app, this.api, () => this.settings, () => this.saveSettings(), this.importer.daily);
 		this.addSettingTab(new IdeashellSettingTab(this.app, this));
 		this.statusEl = this.addStatusBarItem();
 
@@ -80,6 +87,16 @@ export default class IdeashellPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: 'import-todos',
+			name: 'Import to-dos',
+			checkCallback: (checking) => {
+				if (!this.settings.todosEnabled) return false;
+				if (!checking) void this.runTodoImport({ manual: true });
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: 'link-daily-notes',
 			name: 'Link imported notes in daily notes',
 			callback: () => void this.linkDailyNotes(),
@@ -87,7 +104,7 @@ export default class IdeashellPlugin extends Plugin {
 
 		this.updateImportRibbon();
 		this.app.workspace.onLayoutReady(() => {
-			if (this.settings.importFrequency !== 'manual') void this.runImport({ manual: false });
+			if (this.settings.importFrequency !== 'manual') void this.runScheduled();
 			this.setupImportInterval();
 		});
 
@@ -156,6 +173,23 @@ export default class IdeashellPlugin extends Plugin {
 			}),
 		);
 
+		// Two-way sync: after an imported task is edited, sync to-dos once the edit settles. The
+		// sync fetches ideashell first, so ideashell still wins when both sides changed.
+		this.registerEvent(
+			this.app.metadataCache.on('changed', (file) => {
+				if (!this.settings.todosEnabled || !this.settings.todosTwoWay) return;
+				const prev = this.pendingTodoPush.get(file.path);
+				if (prev) window.clearTimeout(prev);
+				this.pendingTodoPush.set(
+					file.path,
+					window.setTimeout(() => {
+						this.pendingTodoPush.delete(file.path);
+						void this.syncEditedTodos(file);
+					}, TODO_EDIT_DELAY_MS),
+				);
+			}),
+		);
+
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', () => this.refreshStatus()),
 		);
@@ -168,6 +202,8 @@ export default class IdeashellPlugin extends Plugin {
 	onunload(): void {
 		for (const t of this.pendingAuto.values()) window.clearTimeout(t);
 		this.pendingAuto.clear();
+		for (const t of this.pendingTodoPush.values()) window.clearTimeout(t);
+		this.pendingTodoPush.clear();
 		this.clearImportInterval();
 	}
 
@@ -211,6 +247,42 @@ export default class IdeashellPlugin extends Plugin {
 		}
 	}
 
+	/** Scheduled run: notes, then to-dos when they are part of the schedule. */
+	private async runScheduled(): Promise<void> {
+		await this.runImport({ manual: false });
+		if (this.settings.todosEnabled && this.settings.todosAutoSync) await this.runTodoImport({ manual: false });
+	}
+
+	private async syncEditedTodos(file: TFile): Promise<void> {
+		if (this.todos.isRunning || !(await this.todos.hasLocalEdits(file))) return;
+		await this.runTodoImport({ manual: false });
+	}
+
+	async runTodoImport(opts: { manual: boolean }): Promise<void> {
+		if (this.todos.isRunning) {
+			if (opts.manual) new Notice('An ideashell to-do import is already running');
+			return;
+		}
+		if (!this.settings.accessKey) {
+			if (opts.manual) new Notice('Add your ideashell API key in settings first');
+			return;
+		}
+		const notice = opts.manual ? new Notice('Importing to-dos from ideashell…', 0) : null;
+		try {
+			const result = await this.todos.run((m) => notice?.setMessage(`ideashell: ${m}`));
+			notice?.hide();
+			if (!result) return;
+			const reason = result.failed > 0 && result.lastError ? ` — ${result.lastError}` : '';
+			if (opts.manual || result.created > 0 || result.failed > 0) {
+				new Notice(`ideashell to-dos: ${summarizeTodos(result)}${reason}`, result.failed > 0 ? 12000 : 8000);
+			}
+		} catch (e) {
+			notice?.hide();
+			console.error('[ideashell] to-do import failed', e);
+			if (opts.manual) new Notice(`ideashell to-do import failed: ${errorMessage(e)}`, 12000);
+		}
+	}
+
 	/** Effective daily note folder / format (plugin settings, else the core Daily notes plugin). */
 	dailyNoteConfig(): { folder: string; format: string } {
 		return this.importer.daily.config();
@@ -243,7 +315,7 @@ export default class IdeashellPlugin extends Plugin {
 		this.clearImportInterval();
 		const ms = IMPORT_FREQUENCY_MS[this.settings.importFrequency];
 		if (!ms) return;
-		this.importIntervalId = window.setInterval(() => void this.runImport({ manual: false }), ms);
+		this.importIntervalId = window.setInterval(() => void this.runScheduled(), ms);
 		this.registerInterval(this.importIntervalId);
 	}
 
@@ -346,6 +418,11 @@ export default class IdeashellPlugin extends Plugin {
 			...DEFAULT_SETTINGS.importState,
 			...data.importState,
 			pending: { ...data.importState?.pending },
+		};
+		this.settings.todoState = {
+			...DEFAULT_SETTINGS.todoState,
+			...data.todoState,
+			synced: { ...data.todoState?.synced },
 		};
 	}
 
